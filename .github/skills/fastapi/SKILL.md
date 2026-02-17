@@ -1,11 +1,10 @@
 ---
 name: fastapi
-description: |
-  Build Python APIs with FastAPI, Pydantic v2, and SQLAlchemy 2.0 async. Covers project structure, JWT auth, validation, and database integration with uv package manager. Prevents 7 documented errors.
-
-  Use when: creating Python APIs, implementing JWT auth, or troubleshooting 422 validation, CORS, async blocking, form data, background tasks, or OpenAPI schema errors.
-user-invocable: true
+description: Build Python APIs with FastAPI, Pydantic v2, and SQLAlchemy 2.0 async. Covers project structure, JWT auth, validation, and database integration with uv package manager.
+user-invokable: true
 ---
+
+**Use when:** creating Python APIs, implementing JWT auth, or troubleshooting 422 validation, CORS, async blocking, form data, background tasks, or OpenAPI schema errors.
 
 # FastAPI Skill
 
