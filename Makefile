@@ -5,12 +5,15 @@ SHELL := /bin/bash
 # Docker compose command - prefer newer 'docker compose' plugin over standalone 'docker-compose'
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
-.PHONY: help dev dev-docker dev-docker-full dev-work-orders dev-hybrid-work-orders stop test test-fe test-be lint lint-fe lint-be clean install check agent-work-orders
+.PHONY: help dev dev-postgres postgres-standalone-up postgres-standalone-down dev-docker dev-docker-full dev-work-orders dev-hybrid-work-orders stop test test-fe test-be lint lint-fe lint-be clean install check agent-work-orders
 
 help:
 	@echo "Archon Development Commands"
 	@echo "==========================="
 	@echo "  make dev                    - Backend in Docker, frontend local (recommended)"
+	@echo "  make dev-postgres           - Backend + standalone PostgreSQL in Docker, frontend local"
+	@echo "  make postgres-standalone-up - Start standalone PostgreSQL + pgvector service"
+	@echo "  make postgres-standalone-down - Stop standalone PostgreSQL + pgvector service"
 	@echo "  make dev-docker             - Backend + frontend in Docker"
 	@echo "  make dev-docker-full        - Everything in Docker (server + mcp + ui + work orders)"
 	@echo "  make dev-hybrid-work-orders - Server + MCP in Docker, UI + work orders local (2 terminals)"
@@ -57,6 +60,32 @@ dev: check
 	VITE_ARCHON_SERVER_PORT=$${ARCHON_SERVER_PORT:-8181} \
 	VITE_ARCHON_SERVER_HOST=$${HOST:-} \
 	npm run dev
+
+# Hybrid development with standalone PostgreSQL
+dev-postgres: check
+	@echo "Starting hybrid development with standalone PostgreSQL..."
+	@echo "Backend + PostgreSQL: Docker | Frontend: Local with hot reload"
+	@$(COMPOSE) --profile backend --profile postgres-standalone up -d --build
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	echo "Backend running at http://$${HOST:-localhost}:$${ARCHON_SERVER_PORT:-8181}"; \
+	echo "Standalone PostgreSQL running at localhost:$${POSTGRES_PORT:-5433}"
+	@echo "Starting frontend..."
+	@cd archon-ui-main && \
+	VITE_ARCHON_SERVER_PORT=$${ARCHON_SERVER_PORT:-8181} \
+	VITE_ARCHON_SERVER_HOST=$${HOST:-} \
+	npm run dev
+
+# Standalone PostgreSQL + pgvector (Docker profile)
+postgres-standalone-up: check
+	@echo "Starting standalone PostgreSQL + pgvector..."
+	@$(COMPOSE) --profile postgres-standalone up archon-postgres -d --build
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	echo "✓ PostgreSQL running at localhost:$${POSTGRES_PORT:-5433}"
+
+postgres-standalone-down:
+	@echo "Stopping standalone PostgreSQL + pgvector..."
+	@$(COMPOSE) --profile postgres-standalone stop archon-postgres
+	@echo "✓ PostgreSQL service stopped"
 
 # Full Docker development (backend + frontend, no work orders)
 dev-docker: check
@@ -124,7 +153,7 @@ dev-hybrid-work-orders: check
 # Stop all services
 stop:
 	@echo "Stopping all services..."
-	@$(COMPOSE) --profile backend --profile frontend --profile full --profile work-orders down
+	@$(COMPOSE) --profile backend --profile frontend --profile full --profile work-orders --profile postgres-standalone down
 	@echo "✓ Services stopped"
 
 # Run all tests

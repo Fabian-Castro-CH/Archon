@@ -1,9 +1,11 @@
 # Docker Compose profiles:
 # - Default (no profile): Starts archon-server, archon-mcp, and archon-frontend
 # - Agents are opt-in: archon-agents starts only with the "agents" profile
+# - postgres-standalone: Also starts archon-postgres (PostgreSQL + pgvector)
 # Usage:
-#   docker compose up                        # Starts server, mcp, frontend (agents disabled)
-#   docker compose --profile agents up -d    # Also starts archon-agents
+#   docker compose up                                   # Supabase backend (default)
+#   docker compose --profile agents up -d               # Also starts archon-agents
+#   docker compose --profile postgres-standalone up -d  # Also starts local PostgreSQL
 
 services:
   # Server Service (FastAPI + Socket.IO + Crawling)
@@ -30,6 +32,11 @@ services:
       - AGENT_WORK_ORDERS_PORT=${AGENT_WORK_ORDERS_PORT:-8053}
       - AGENTS_ENABLED=${AGENTS_ENABLED:-false}
       - ARCHON_HOST=${HOST:-localhost}
+      - DB_PROVIDER=${DB_PROVIDER:-supabase}
+      - POSTGRES_DSN=${POSTGRES_DSN:-}
+      - DB_ENCRYPTION_SEED=${DB_ENCRYPTION_SEED:-}
+      - POSTGRES_POOL_MIN=${POSTGRES_POOL_MIN:-1}
+      - POSTGRES_POOL_MAX=${POSTGRES_POOL_MAX:-10}
     networks:
       - app-network
     volumes:
@@ -234,6 +241,37 @@ services:
       archon-server:
         condition: service_healthy
 
+  # Standalone PostgreSQL + pgvector (alternative to Supabase)
+  archon-postgres:
+    profiles:
+      - postgres-standalone  # Only starts with --profile postgres-standalone
+    image: pgvector/pgvector:pg16
+    container_name: archon-postgres
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-archon}
+      - POSTGRES_USER=${POSTGRES_USER:-archon}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-archon}
+    volumes:
+      - archon_pgdata:/var/lib/postgresql/data
+      - ./migration:/migration
+      - ./migration/postgres_standalone/01_setup.sh:/docker-entrypoint-initdb.d/01_setup.sh
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-archon} -d ${POSTGRES_DB:-archon}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 networks:
   app-network:
     driver: bridge
+
+volumes:
+  archon_pgdata:
+
+volumes:
+  archon_pgdata:

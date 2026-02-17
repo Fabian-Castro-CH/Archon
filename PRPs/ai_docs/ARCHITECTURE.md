@@ -7,7 +7,7 @@ Archon is a knowledge management system with AI capabilities, built as a monolit
 ## Tech Stack
 
 **Frontend**: React 18, TypeScript 5, TanStack Query v5, Tailwind CSS, Vite
-**Backend**: Python 3.12, FastAPI, Supabase, PydanticAI
+**Backend**: Python 3.12, FastAPI, Supabase/PostgreSQL adapter layer, PydanticAI
 **Infrastructure**: Docker, PostgreSQL + pgvector
 
 ## Directory Structure
@@ -86,7 +86,7 @@ Pattern: `{METHOD} /api/{resource}/{id?}/{sub-resource?}`
 ### Service Layer
 **Pattern**: `python/src/server/services/{feature}_service.py`
 - Handles business logic
-- Database operations via Supabase client
+- Database operations via database client abstraction
 - Returns typed responses
 
 ## Frontend Architecture
@@ -118,8 +118,30 @@ features/{feature}/
 
 ## Database
 
-**Provider**: Supabase (PostgreSQL + pgvector)
-**Client**: `python/src/server/config/database.py`
+**Provider**: Configurable via `DB_PROVIDER`
+**Default**: `supabase`
+**Alternative**: `postgres` (standalone PostgreSQL + pgvector)
+
+### Database Abstraction Layer
+- **Protocol**: `python/src/server/db/protocol.py` (`DatabaseClient`, `TableQueryBuilder`, `RpcQueryBuilder`)
+- **Factory**: `python/src/server/db/factory.py` (`get_db_client()` selects provider at startup)
+- **Supabase Adapter**: `python/src/server/db/supabase_adapter.py`
+- **PostgreSQL Adapter**: `python/src/server/db/postgres_adapter.py`
+- **Service Entry Point**: `python/src/server/services/client_manager.py`
+
+All application services depend on the shared database client interface, so business logic does not change when switching providers.
+
+### Runtime Configuration
+- `DB_PROVIDER=supabase` uses Supabase settings (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`)
+- `DB_PROVIDER=postgres` requires `POSTGRES_DSN`
+- `POSTGRES_POOL_MIN` and `POSTGRES_POOL_MAX` control connection pool size for standalone mode
+- `DB_ENCRYPTION_SEED` can be used for credential encryption when not using Supabase keys
+
+### Local Standalone PostgreSQL
+- Docker profile: `postgres-standalone`
+- Service: `archon-postgres` (`pgvector/pgvector:pg16`)
+- Bootstrap script: `migration/postgres_standalone/01_setup.sh`
+- Setup docs: `migration/postgres_standalone/README.md`
 
 ### Main Tables
 - `sources` - Knowledge sources
@@ -165,7 +187,11 @@ Single Docker Compose deployment with all services.
 ## Configuration
 
 ### Environment Variables
-**Required**: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+**Required**:
+- `DB_PROVIDER=supabase`: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+- `DB_PROVIDER=postgres`: `POSTGRES_DSN`
+
+**Common Optional**: `POSTGRES_POOL_MIN`, `POSTGRES_POOL_MAX`, `DB_ENCRYPTION_SEED`
 **Optional**: See `.env.example`
 
 ### Feature Flags
