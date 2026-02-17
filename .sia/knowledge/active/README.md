@@ -20,7 +20,7 @@ Archon provides a shared knowledge and execution platform for AI coding assistan
 ## Key Architectural Decisions
 - Service layer pattern in backend: route handlers delegate to services.
 - Vertical-slice frontend architecture in `archon-ui-main/src/features/`.
-- Supabase/Postgres as persistent store with SQL-based migrations.
+- Configurable database backend via `DB_PROVIDER` (`supabase` default, `postgres` standalone) with SQL-based migrations.
 - MCP capabilities organized by feature under `python/src/mcp_server/features/`.
 
 ## Research Cache Pointers
