@@ -1,0 +1,19 @@
+agents:
+  active:
+    - archon
+    - module_coordinator
+domain:
+  bounded_contexts:
+    - Routes
+    - Sse_streams
+git:
+  branch: main
+  remote: git@github.com:Fabian-Castro-CH/Archon.git
+paths: {}
+project:
+  name: Archon
+  root: C:\Proyectos\CHAI\Archon
+  type: python-fastapi-node-react
+sia_version: 1.0.0
+spr:
+  path: .sia/agents/archon.md
