@@ -30,15 +30,32 @@ echo "[Archon] Generating standalone schema from complete_setup.sql..."
 
 # Strip Supabase-specific RLS statements:
 #   - ALTER TABLE ... ENABLE ROW LEVEL SECURITY
-#   - CREATE POLICY ...
+#   - Full CREATE POLICY blocks (multi-line until ';')
 #   - Lines containing auth.role() or auth.uid()
 # All other DDL (tables, indexes, functions, extensions) is preserved.
-FILTERED_SQL=$(grep -v \
-    -e "ENABLE ROW LEVEL SECURITY" \
-    -e "^CREATE POLICY" \
-    -e "auth\.role()" \
-    -e "auth\.uid()" \
-    "$COMPLETE_SETUP")
+FILTERED_SQL=$(awk '
+    BEGIN { skip_policy = 0 }
+
+    skip_policy {
+        if ($0 ~ /;/) {
+            skip_policy = 0
+        }
+        next
+    }
+
+    /^CREATE POLICY/ {
+        if ($0 !~ /;/) {
+            skip_policy = 1
+        }
+        next
+    }
+
+    /ENABLE ROW LEVEL SECURITY/ { next }
+    /auth\.role\(\)/ { next }
+    /auth\.uid\(\)/ { next }
+
+    { print }
+' "$COMPLETE_SETUP")
 
 echo "[Archon] Applying schema to database: $DB..."
 echo "$FILTERED_SQL" | psql -v ON_ERROR_STOP=1 --username "$USER" --dbname "$DB"
