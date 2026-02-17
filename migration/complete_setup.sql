@@ -93,9 +93,11 @@ INSERT INTO archon_settings (key, encrypted_value, is_encrypted, category, descr
 
 -- LLM Provider configuration settings
 INSERT INTO archon_settings (key, value, is_encrypted, category, description) VALUES
-('LLM_PROVIDER', 'openai', false, 'rag_strategy', 'LLM provider to use: openai, ollama, or google'),
+('LLM_PROVIDER', 'openai', false, 'rag_strategy', 'LLM provider to use: openai, ollama, google, anthropic, grok, openrouter, or vllm'),
 ('LLM_BASE_URL', NULL, false, 'rag_strategy', 'Custom base URL for LLM provider (mainly for Ollama, e.g., http://host.docker.internal:11434/v1)'),
-('EMBEDDING_MODEL', 'text-embedding-3-small', false, 'rag_strategy', 'Embedding model for vector search and similarity matching (required for all embedding operations)')
+('EMBEDDING_MODEL', 'text-embedding-3-small', false, 'rag_strategy', 'Embedding model for vector search and similarity matching (required for all embedding operations)'),
+('VLLM_BASE_URL', NULL, false, 'rag_strategy', 'Base URL for vLLM server for chat completions (e.g., http://localhost:8000/v1)'),
+('VLLM_EMBEDDING_URL', NULL, false, 'rag_strategy', 'vLLM endpoint for text embeddings; defaults to VLLM_BASE_URL if not set')
 ON CONFLICT (key) DO NOTHING;
 
 -- Add provider API key placeholders
@@ -103,7 +105,8 @@ INSERT INTO archon_settings (key, encrypted_value, is_encrypted, category, descr
 ('GOOGLE_API_KEY', NULL, true, 'api_keys', 'Google API key for Gemini models. Get from: https://aistudio.google.com/apikey'),
 ('OPENROUTER_API_KEY', NULL, true, 'api_keys', 'OpenRouter API key for hosted community models. Get from: https://openrouter.ai/keys'),
 ('ANTHROPIC_API_KEY', NULL, true, 'api_keys', 'Anthropic API key for Claude models. Get from: https://console.anthropic.com/account/keys'),
-('GROK_API_KEY', NULL, true, 'api_keys', 'Grok API key for xAI models. Get from: https://console.x.ai/')
+('GROK_API_KEY', NULL, true, 'api_keys', 'Grok API key for xAI models. Get from: https://console.x.ai/'),
+('VLLM_API_KEY', NULL, true, 'api_keys', 'Optional API key for vLLM server authentication (leave empty if no auth required)')
 ON CONFLICT (key) DO NOTHING;
 
 -- Code Extraction Settings Migration

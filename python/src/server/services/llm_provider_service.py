@@ -23,7 +23,7 @@ def _is_valid_provider(provider: str) -> bool:
     """Basic provider validation."""
     if not provider or not isinstance(provider, str):
         return False
-    return provider.lower() in {"openai", "ollama", "google", "openrouter", "anthropic", "grok"}
+    return provider.lower() in {"openai", "ollama", "google", "openrouter", "anthropic", "grok", "vllm"}
 
 
 def _sanitize_for_log(text: str) -> str:
@@ -496,6 +496,27 @@ async def get_llm_client(
             )
             logger.info("Grok client created successfully")
 
+        elif provider_name == "vllm":
+            # vLLM exposes an OpenAI-compatible REST API; base_url is mandatory.
+            if not base_url:
+                raise ValueError(
+                    "vLLM base URL not configured. Set VLLM_BASE_URL in Settings or .env "
+                    "(e.g. http://localhost:8000/v1)."
+                )
+            # Normalise: ensure the URL ends with /v1 so the OpenAI client routes correctly.
+            normalised_url = base_url.rstrip("/")
+            if not normalised_url.endswith("/v1"):
+                normalised_url = f"{normalised_url}/v1"
+
+            # API key is optional in vLLM deployments; use placeholder when absent.
+            effective_key = api_key if api_key else "vllm"
+
+            client = openai.AsyncOpenAI(
+                api_key=effective_key,
+                base_url=normalised_url,
+            )
+            logger.info(f"vLLM client created successfully with base URL: {normalised_url}")
+
         else:
             raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
@@ -665,6 +686,10 @@ async def get_embedding_model(provider: str | None = None) -> str:
             # Grok supports OpenAI and Google embedding models through their API
             # Default to OpenAI's latest for compatibility
             return "text-embedding-3-small"
+        elif provider_name == "vllm":
+            # vLLM serves any model; no universal default — user must configure EMBEDDING_MODEL.
+            # Return empty string so the caller is forced to set an explicit model name.
+            return ""
         else:
             # Fallback to OpenAI's model
             return "text-embedding-3-small"
@@ -748,6 +773,9 @@ def is_valid_embedding_model_for_provider(model: str, provider: str) -> bool:
         model_lower = model.lower()
         ollama_patterns = ["nomic-embed", "all-minilm", "mxbai-embed", "embed"]
         return any(pattern in model_lower for pattern in ollama_patterns)
+    elif provider_lower == "vllm":
+        # vLLM is OpenAI-compatible; any non-empty model string is accepted.
+        return bool(model and model.strip())
     else:
         # For unknown providers, assume OpenAI compatibility
         return is_openai_embedding_model(model)
@@ -791,6 +819,9 @@ def get_supported_embedding_models(provider: str) -> list[str]:
         return openai_models + google_models
     elif provider_lower == "ollama":
         return ["nomic-embed-text", "all-minilm", "mxbai-embed-large"]
+    elif provider_lower == "vllm":
+        # vLLM is deployment-specific; no fixed model list. Return a placeholder.
+        return []
     else:
         # For unknown providers, assume OpenAI compatibility
         return openai_models

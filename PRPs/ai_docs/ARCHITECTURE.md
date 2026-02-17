@@ -197,6 +197,21 @@ Single Docker Compose deployment with all services.
 ### Feature Flags
 Controlled via Settings UI. Projects feature can be disabled.
 
+### LLM Provider Configuration
+Provider selection and model are stored in the `archon_settings` DB table (category: `rag_strategy`). All providers share the same routing layer in `python/src/server/services/llm_provider_service.py`.
+
+| Provider | Chat | Embeddings | Auth | URL |
+|---|---|---|---|---|
+| `openai` | ✅ | ✅ | `OPENAI_API_KEY` | Default |
+| `google` | ✅ | ✅ | `GOOGLE_API_KEY` | Default |
+| `anthropic` | ✅ | — | `ANTHROPIC_API_KEY` | Default |
+| `openrouter` | ✅ | — | `OPENROUTER_API_KEY` | Default |
+| `grok` | ✅ | — | `GROK_API_KEY` | Default |
+| `ollama` | ✅ | ✅ | None | `LLM_BASE_URL` / `OLLAMA_EMBEDDING_URL` |
+| `vllm` | ✅ | ✅ | `VLLM_API_KEY` (optional) | `VLLM_BASE_URL` / `VLLM_EMBEDDING_URL` |
+
+vLLM exposes an OpenAI-compatible REST API; set `VLLM_BASE_URL` (e.g., `http://localhost:8000`) in Settings to point Archon at your running vLLM server.
+
 ## Recent Refactors (Phases 1-5)
 
 1. **Removed ETag cache layer** - Browser handles HTTP caching

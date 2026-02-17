@@ -422,7 +422,7 @@ class CredentialService:
                 explicit_embedding_provider = rag_settings.get("EMBEDDING_PROVIDER")
 
                 # Validate that embedding provider actually supports embeddings
-                embedding_capable_providers = {"openai", "google", "openrouter", "ollama"}
+                embedding_capable_providers = {"openai", "google", "openrouter", "ollama", "vllm"}
 
                 if (explicit_embedding_provider and
                     explicit_embedding_provider != "" and
@@ -488,11 +488,17 @@ class CredentialService:
             "anthropic": "ANTHROPIC_API_KEY",
             "grok": "GROK_API_KEY",
             "ollama": None,  # No API key needed
+            "vllm": "VLLM_API_KEY",  # Optional — vLLM can run without auth
         }
 
         key_name = key_mapping.get(provider)
         if key_name:
-            return await self.get_credential(key_name)
+            api_key = await self.get_credential(key_name)
+            # vLLM API key is optional; return a non-empty placeholder when absent
+            # so openai.AsyncOpenAI doesn't reject the client creation
+            if provider == "vllm" and not api_key:
+                return "vllm"
+            return api_key
         return "ollama" if provider == "ollama" else None
 
     def _get_provider_base_url(self, provider: str, rag_settings: dict) -> str | None:
@@ -507,6 +513,9 @@ class CredentialService:
             return "https://api.anthropic.com/v1"
         elif provider == "grok":
             return "https://api.x.ai/v1"
+        elif provider == "vllm":
+            # Reads VLLM_BASE_URL from DB settings; falls back to env var for startup
+            return rag_settings.get("VLLM_BASE_URL") or os.getenv("VLLM_BASE_URL", "")
         return None  # Use default for OpenAI
 
     async def set_active_provider(self, provider: str, service_type: str = "llm") -> bool:
