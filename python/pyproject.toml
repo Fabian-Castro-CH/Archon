@@ -43,6 +43,8 @@ server = [
     # Database and storage
     "supabase==2.15.1",
     "asyncpg>=0.29.0",
+    "pgvector>=0.4.2",
+    "psycopg2-binary>=2.9.11",
     # AI/ML libraries
     "openai==1.71.0",
     # Document processing
@@ -122,6 +124,8 @@ all = [
     "crawl4ai==0.7.4",
     "supabase==2.15.1",
     "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.9",
+    "pgvector>=0.3.0",
     "openai==1.71.0",
     "pypdf2>=3.0.1",
     "pdfplumber>=0.11.6",
