@@ -272,6 +272,3 @@ networks:
 
 volumes:
   archon_pgdata:
-
-volumes:
-  archon_pgdata:
