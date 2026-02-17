@@ -7,7 +7,6 @@ Credentials include API keys, service credentials, and application configuration
 
 import base64
 import os
-import re
 import time
 from dataclasses import dataclass
 
@@ -17,9 +16,10 @@ from typing import Any
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from supabase import Client, create_client
 
 from ..config.logfire_config import get_logger
+from ..db.factory import get_db_client
+from ..db.protocol import DatabaseClient
 
 logger = get_logger(__name__)
 
@@ -42,49 +42,28 @@ class CredentialService:
     """Service for managing application credentials and configuration."""
 
     def __init__(self):
-        self._supabase: Client | None = None
+        self._supabase: DatabaseClient | None = None
         self._cache: dict[str, Any] = {}
         self._cache_initialized = False
         self._rag_settings_cache: dict[str, Any] | None = None
         self._rag_cache_timestamp: float | None = None
         self._rag_cache_ttl = 300  # 5 minutes TTL for RAG settings cache
 
-    def _get_supabase_client(self) -> Client:
-        """
-        Get or create a properly configured Supabase client using environment variables.
-        Uses the standard Supabase client initialization.
-        """
+    def _get_supabase_client(self) -> DatabaseClient:
+        """Get the active database client (Supabase or standalone PostgreSQL)."""
         if self._supabase is None:
-            url = os.getenv("SUPABASE_URL")
-            key = os.getenv("SUPABASE_SERVICE_KEY")
-
-            if not url or not key:
-                raise ValueError(
-                    "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables"
-                )
-
-            try:
-                # Initialize with standard Supabase client - no need for custom headers
-                self._supabase = create_client(url, key)
-
-                # Extract project ID from URL for logging purposes only
-                match = re.match(r"https://([^.]+)\.supabase\.co", url)
-                if match:
-                    project_id = match.group(1)
-                    logger.debug(f"Supabase client initialized for project: {project_id}")
-                else:
-                    logger.debug("Supabase client initialized successfully")
-
-            except Exception as e:
-                logger.error(f"Error initializing Supabase client: {e}")
-                raise
-
+            self._supabase = get_db_client()
         return self._supabase
 
     def _get_encryption_key(self) -> bytes:
         """Generate encryption key from environment variables."""
-        # Use Supabase service key as the basis for encryption key
-        service_key = os.getenv("SUPABASE_SERVICE_KEY", "default-key-for-development")
+        # Use SUPABASE_SERVICE_KEY when available, else DB_ENCRYPTION_SEED, else a development default.
+        # In standalone postgres mode, set DB_ENCRYPTION_SEED to a stable secret.
+        service_key = (
+            os.getenv("SUPABASE_SERVICE_KEY")
+            or os.getenv("DB_ENCRYPTION_SEED")
+            or "default-key-for-development"
+        )
 
         # Generate a proper encryption key using PBKDF2
         kdf = PBKDF2HMAC(

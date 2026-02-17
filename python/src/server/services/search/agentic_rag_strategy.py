@@ -14,9 +14,8 @@ Key features:
 
 from typing import Any
 
-from supabase import Client
-
 from ...config.logfire_config import get_logger, safe_span
+from ...db.protocol import DatabaseClient as Client
 from ..embeddings.embedding_service import create_embedding
 
 logger = get_logger(__name__)

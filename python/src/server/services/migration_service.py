@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import logfire
-from supabase import Client
 
-from .client_manager import get_supabase_client
 from ..config.version import ARCHON_VERSION
+from ..db.protocol import DatabaseClient as Client
+from .client_manager import get_supabase_client
 
 
 class MigrationRecord:

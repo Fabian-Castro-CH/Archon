@@ -15,9 +15,8 @@ from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlparse
 
-from supabase import Client
-
 from ...config.logfire_config import search_logger
+from ...db.protocol import DatabaseClient as Client
 from ..credential_service import credential_service
 from ..embeddings.contextual_embedding_service import generate_contextual_embeddings_batch
 from ..embeddings.embedding_service import create_embeddings_batch

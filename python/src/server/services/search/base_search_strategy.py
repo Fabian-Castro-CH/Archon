@@ -7,9 +7,8 @@ This is the core semantic search functionality.
 
 from typing import Any
 
-from supabase import Client
-
 from ...config.logfire_config import get_logger, safe_span
+from ...db.protocol import DatabaseClient as Client
 
 logger = get_logger(__name__)
 

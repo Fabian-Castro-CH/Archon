@@ -19,7 +19,7 @@ import asyncio
 import os
 from typing import Optional
 
-from ..services.client_manager import get_supabase_client
+from ..services.client_manager import get_db_client, get_supabase_client
 from ..services.embeddings import (
     create_embedding,
     create_embeddings_batch,
@@ -84,6 +84,7 @@ __all__ = [
     "RateLimitConfig",
     # Client functions
     "get_supabase_client",
+    "get_db_client",
     # Embedding functions
     "create_embedding",
     "create_embeddings_batch",
