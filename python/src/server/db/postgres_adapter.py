@@ -10,7 +10,6 @@ Active when DB_PROVIDER=postgres + POSTGRES_DSN is set.
 
 from __future__ import annotations
 
-import json
 import logging
 from enum import Enum, auto
 from typing import Any
@@ -58,6 +57,12 @@ def _build_where(filters: list[_Filter]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
     for f in filters:
+        if f.kind == "or":
+            # PostgREST-style OR string, e.g. "col.eq.val,col2.is.null"
+            or_clause = _parse_or_filter(f.value)
+            if or_clause:
+                clauses.append(f"({or_clause})")
+            continue
         col = psycopg2.extensions.quote_ident(f.column, None)  # type: ignore[arg-type]
         if f.kind == "eq":
             clauses.append(f"{col} = %s")
@@ -78,7 +83,47 @@ def _build_where(filters: list[_Filter]) -> tuple[str, list[Any]]:
         elif f.kind == "ilike":
             clauses.append(f"{col} ILIKE %s")
             params.append(f.value)
+        elif f.kind == "contains":
+            # JSONB containment operator @>
+            clauses.append(f"{col} @> %s::jsonb")
+            params.append(psycopg2.extras.Json(f.value))
     return "WHERE " + " AND ".join(clauses), params
+
+
+def _parse_or_filter(filter_str: str) -> str:
+    """
+    Parse a PostgREST-style OR filter string into a SQL OR clause.
+    Supports: col.eq.val | col.ilike.val | col.is.null | col.is.false | col.is.true
+    Multiple conditions are comma-separated.
+    Example: "title.ilike.%foo%,summary.ilike.%foo%"
+    Example: "archived.is.null,archived.is.false"
+    """
+    parts = filter_str.split(",")
+    sql_parts: list[str] = []
+    for part in parts:
+        part = part.strip()
+        segments = part.split(".", 2)
+        if len(segments) < 3:
+            continue
+        col, op, val = segments
+        col_quoted = f'"{col}"'
+        if op == "eq":
+            sql_parts.append(f"{col_quoted} = '{val}'")
+        elif op == "neq":
+            sql_parts.append(f"{col_quoted} != '{val}'")
+        elif op == "ilike":
+            sql_parts.append(f"{col_quoted} ILIKE '{val}'")
+        elif op == "is":
+            if val == "null":
+                sql_parts.append(f"{col_quoted} IS NULL")
+            elif val == "false":
+                sql_parts.append(f"{col_quoted} IS FALSE")
+            elif val == "true":
+                sql_parts.append(f"{col_quoted} IS TRUE")
+        elif op == "not":
+            # e.g. col.not.is.null — simplified handling
+            sql_parts.append(f"{col_quoted} IS NOT NULL")
+    return " OR ".join(sql_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -102,29 +147,36 @@ class PostgresTableQueryBuilder:
         self._filters: list[_Filter] = []
         self._orders: list[tuple[str, bool]] = []  # (column, desc)
         self._limit_val: int | None = None
+        self._offset_val: int | None = None
+        self._count_mode: bool = False  # True when count="exact" requested
+        self._head_mode: bool = False   # True when head=True (count only, no rows)
 
     # --- Column selection ---
 
-    def select(self, columns: str = "*") -> "PostgresTableQueryBuilder":
+    def select(self, columns: str = "*", *, count: str | None = None, head: bool = False) -> PostgresTableQueryBuilder:
         self._op = _Op.SELECT
         self._columns = columns
+        if count == "exact":
+            self._count_mode = True
+        if head:
+            self._head_mode = True
         return self
 
     # --- Mutations ---
 
     def insert(
         self, data: dict[str, Any] | list[dict[str, Any]]
-    ) -> "PostgresTableQueryBuilder":
+    ) -> PostgresTableQueryBuilder:
         self._op = _Op.INSERT
         self._data = data
         return self
 
-    def update(self, data: dict[str, Any]) -> "PostgresTableQueryBuilder":
+    def update(self, data: dict[str, Any]) -> PostgresTableQueryBuilder:
         self._op = _Op.UPDATE
         self._data = data
         return self
 
-    def delete(self) -> "PostgresTableQueryBuilder":
+    def delete(self) -> PostgresTableQueryBuilder:
         self._op = _Op.DELETE
         return self
 
@@ -132,7 +184,7 @@ class PostgresTableQueryBuilder:
         self,
         data: dict[str, Any] | list[dict[str, Any]],
         on_conflict: str = "",
-    ) -> "PostgresTableQueryBuilder":
+    ) -> PostgresTableQueryBuilder:
         self._op = _Op.UPSERT
         self._data = data
         self._on_conflict = on_conflict
@@ -140,48 +192,82 @@ class PostgresTableQueryBuilder:
 
     # --- Filters ---
 
-    def eq(self, column: str, value: Any) -> "PostgresTableQueryBuilder":
+    def eq(self, column: str, value: Any) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("eq", column, value))
         return self
 
-    def neq(self, column: str, value: Any) -> "PostgresTableQueryBuilder":
+    def neq(self, column: str, value: Any) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("neq", column, value))
         return self
 
-    def in_(self, column: str, values: list[Any]) -> "PostgresTableQueryBuilder":
+    def in_(self, column: str, values: list[Any]) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("in", column, values))
         return self
 
-    def gte(self, column: str, value: Any) -> "PostgresTableQueryBuilder":
+    def gte(self, column: str, value: Any) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("gte", column, value))
         return self
 
-    def lte(self, column: str, value: Any) -> "PostgresTableQueryBuilder":
+    def lte(self, column: str, value: Any) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("lte", column, value))
         return self
 
-    def ilike(self, column: str, pattern: str) -> "PostgresTableQueryBuilder":
+    def ilike(self, column: str, pattern: str) -> PostgresTableQueryBuilder:
         self._filters.append(_Filter("ilike", column, pattern))
+        return self
+
+    def contains(self, column: str, value: Any) -> PostgresTableQueryBuilder:
+        """Filter rows where JSONB column contains the given key-value pairs."""
+        self._filters.append(_Filter("contains", column, value))
+        return self
+
+    def or_(self, filters: str) -> PostgresTableQueryBuilder:
+        """Apply OR filter using PostgREST-style filter string (best-effort parsing)."""
+        self._filters.append(_Filter("or", "", filters))
         return self
 
     # --- Ordering / pagination ---
 
-    def order(self, column: str, *, desc: bool = False) -> "PostgresTableQueryBuilder":
+    def order(self, column: str, *, desc: bool = False) -> PostgresTableQueryBuilder:
         self._orders.append((column, desc))
         return self
 
-    def limit(self, count: int) -> "PostgresTableQueryBuilder":
+    def limit(self, count: int) -> PostgresTableQueryBuilder:
         self._limit_val = count
+        return self
+
+    def range(self, start: int, end: int) -> PostgresTableQueryBuilder:
+        """Inclusive range pagination: start and end are 0-based row indices."""
+        self._offset_val = start
+        self._limit_val = end - start + 1
         return self
 
     # --- Execution ---
 
-    def execute(self) -> "APIResponse":  # noqa: F821
+    def execute(self) -> APIResponse:  # noqa: F821
         from .protocol import APIResponse
 
         conn = self._pool.getconn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if self._count_mode:
+                    # Run a COUNT(*) query to populate APIResponse.count
+                    count_sql, count_params = self._build_count_sql()
+                    logger.debug("PostgreSQL count: %s | params=%s", count_sql, count_params)
+                    cur.execute(count_sql, count_params)
+                    conn.commit()
+                    row = cur.fetchone()
+                    count_val = row["count"] if row else 0
+                    if self._head_mode:
+                        # head=True means return count only, no data rows
+                        return APIResponse(data=[], count=count_val)
+                    # count="exact" without head: return data rows + count
+                    sql, params = self._build_sql()
+                    cur.execute(sql, params)
+                    rows = cur.fetchall() if cur.description else []
+                    data = [dict(r) for r in rows]
+                    return APIResponse(data=data, count=count_val)
+
                 sql, params = self._build_sql()
                 logger.debug("PostgreSQL execute: %s | params=%s", sql, params)
                 cur.execute(sql, params)
@@ -194,6 +280,15 @@ class PostgresTableQueryBuilder:
             raise
         finally:
             self._pool.putconn(conn)
+
+    def _build_count_sql(self) -> tuple[str, list[Any]]:
+        """Build a COUNT(*) query using current filters."""
+        tbl = self._table
+        where_clause, where_params = _build_where(self._filters)
+        sql = f"SELECT COUNT(*) AS count FROM {tbl}"
+        if where_clause:
+            sql += " " + where_clause
+        return sql, where_params
 
     # --- Internal SQL builder ---
 
@@ -215,6 +310,8 @@ class PostgresTableQueryBuilder:
                 sql += " ORDER BY " + ", ".join(order_parts)
             if self._limit_val is not None:
                 sql += f" LIMIT {int(self._limit_val)}"
+            if self._offset_val is not None:
+                sql += f" OFFSET {int(self._offset_val)}"
             return sql, params
 
         if self._op is _Op.INSERT:
@@ -312,7 +409,7 @@ class PostgresRpcQueryBuilder:
         self._func = func
         self._params = params
 
-    def execute(self) -> "APIResponse":  # noqa: F821
+    def execute(self) -> APIResponse:  # noqa: F821
         from .protocol import APIResponse
 
         conn = self._pool.getconn()
@@ -382,6 +479,10 @@ class PostgresDatabaseClient:
 
     def table(self, name: str) -> PostgresTableQueryBuilder:
         return PostgresTableQueryBuilder(self._pool, name)
+
+    def from_(self, name: str) -> PostgresTableQueryBuilder:
+        """Alias for table() — mirrors the supabase-py client.from_() API."""
+        return self.table(name)
 
     def rpc(self, name: str, params: dict[str, Any]) -> PostgresRpcQueryBuilder:
         return PostgresRpcQueryBuilder(self._pool, name, params)
