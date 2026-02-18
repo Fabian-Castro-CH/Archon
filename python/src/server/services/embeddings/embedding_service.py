@@ -84,8 +84,9 @@ class EmbeddingProviderAdapter(ABC):
 class OpenAICompatibleEmbeddingAdapter(EmbeddingProviderAdapter):
     """Adapter for providers using the OpenAI embeddings API shape."""
     
-    def __init__(self, client: Any):
+    def __init__(self, client: Any, provider: str):
         self._client = client
+        self._provider = (provider or "").lower()
     
     async def create_embeddings(
         self,
@@ -97,7 +98,7 @@ class OpenAICompatibleEmbeddingAdapter(EmbeddingProviderAdapter):
             "model": model,
             "input": texts,
         }
-        if dimensions is not None:
+        if dimensions is not None and self._provider != "vllm":
             request_args["dimensions"] = dimensions
             
         response = await self._client.embeddings.create(**request_args)
@@ -221,7 +222,7 @@ def _get_embedding_adapter(provider: str, client: Any) -> EmbeddingProviderAdapt
     provider_name = (provider or "").lower()
     if provider_name == "google":
         return GoogleEmbeddingAdapter()
-    return OpenAICompatibleEmbeddingAdapter(client)
+    return OpenAICompatibleEmbeddingAdapter(client, provider_name)
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -371,15 +372,27 @@ async def create_embeddings_batch(
                         credential_service.get_credentials_by_category("rag_strategy")
                     )
                     batch_size = int(rag_settings.get("EMBEDDING_BATCH_SIZE", "100"))
-                    embedding_dimensions = int(rag_settings.get("EMBEDDING_DIMENSIONS", "1536"))
+                    raw_dimensions = rag_settings.get("EMBEDDING_DIMENSIONS")
+                    embedding_dimensions: int | None = None
+
+                    # Keep dimensions disabled for vLLM by default.
+                    # vLLM models may reject dimensions unless they support matryoshka reduction.
+                    if embedding_provider == "openai":
+                        embedding_dimensions = int(raw_dimensions or "1536")
+                    elif embedding_provider != "vllm" and raw_dimensions not in (None, "", "0"):
+                        embedding_dimensions = int(raw_dimensions)
                 except Exception as e:
                     search_logger.warning(f"Failed to load embedding settings: {e}, using defaults")
                     batch_size = 100
-                    embedding_dimensions = 1536
+                    embedding_dimensions = 1536 if embedding_provider == "openai" else None
 
                 total_tokens_used = 0
                 adapter = _get_embedding_adapter(embedding_provider, client)
-                dimensions_to_use = embedding_dimensions if embedding_dimensions > 0 else None
+                dimensions_to_use = (
+                    embedding_dimensions
+                    if embedding_dimensions is not None and embedding_dimensions > 0
+                    else None
+                )
 
                 for i in range(0, len(texts), batch_size):
                     batch = texts[i : i + batch_size]
