@@ -20,7 +20,9 @@ export interface RagSettings {
   LLM_PROVIDER?: string;
   LLM_BASE_URL?: string;
   LLM_INSTANCE_NAME?: string;
+  VLLM_BASE_URL?: string;
   OLLAMA_EMBEDDING_URL?: string;
+  VLLM_EMBEDDING_URL?: string;
   OLLAMA_EMBEDDING_INSTANCE_NAME?: string;
   EMBEDDING_MODEL?: string;
   EMBEDDING_PROVIDER?: string;
@@ -97,7 +99,7 @@ class CredentialsService {
     ) {
       return new Error(
         `Network error while ${context.toLowerCase()}: ${errorMessage}. ` +
-          `Please check your connection and server status.`,
+        `Please check your connection and server status.`,
       );
     }
 
@@ -177,11 +179,11 @@ class CredentialsService {
       },
       body: JSON.stringify({ keys }),
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to check credential status: ${response.statusText}`);
     }
-    
+
     return response.json();
   }
 
@@ -193,16 +195,18 @@ class CredentialsService {
       USE_CONTEXTUAL_EMBEDDINGS: false,
       CONTEXTUAL_EMBEDDINGS_MAX_WORKERS: 3,
       USE_HYBRID_SEARCH: true,
-  USE_AGENTIC_RAG: true,
-  USE_RERANKING: true,
-  MODEL_CHOICE: "gpt-4.1-nano",
-  LLM_PROVIDER: "openai",
-  LLM_BASE_URL: "",
-  LLM_INSTANCE_NAME: "",
-  OLLAMA_EMBEDDING_URL: "",
-  OLLAMA_EMBEDDING_INSTANCE_NAME: "",
-  EMBEDDING_PROVIDER: "openai",
-  EMBEDDING_MODEL: "",
+      USE_AGENTIC_RAG: true,
+      USE_RERANKING: true,
+      MODEL_CHOICE: "gpt-4.1-nano",
+      LLM_PROVIDER: "openai",
+      LLM_BASE_URL: "",
+      LLM_INSTANCE_NAME: "",
+      VLLM_BASE_URL: "",
+      OLLAMA_EMBEDDING_URL: "",
+      VLLM_EMBEDDING_URL: "",
+      OLLAMA_EMBEDDING_INSTANCE_NAME: "",
+      EMBEDDING_PROVIDER: "openai",
+      EMBEDDING_MODEL: "",
       // Crawling Performance Settings defaults
       CRAWL_BATCH_SIZE: 50,
       CRAWL_MAX_CONCURRENT: 10,
@@ -231,7 +235,9 @@ class CredentialsService {
             "LLM_PROVIDER",
             "LLM_BASE_URL",
             "LLM_INSTANCE_NAME",
+            "VLLM_BASE_URL",
             "OLLAMA_EMBEDDING_URL",
+            "VLLM_EMBEDDING_URL",
             "OLLAMA_EMBEDDING_INSTANCE_NAME",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -431,22 +437,22 @@ class CredentialsService {
   async getOllamaInstances(): Promise<OllamaInstance[]> {
     try {
       const ollamaCredentials = await this.getCredentialsByCategory('ollama_instances');
-      
+
       // Convert credentials to OllamaInstance objects
       const instances: OllamaInstance[] = [];
       const instanceMap: Record<string, Partial<OllamaInstance>> = {};
-      
+
       // Group credentials by instance ID
       ollamaCredentials.forEach(cred => {
         const parts = cred.key.split('_');
         if (parts.length >= 3 && parts[0] === 'ollama' && parts[1] === 'instance') {
           const instanceId = parts[2];
           const field = parts.slice(3).join('_');
-          
+
           if (!instanceMap[instanceId]) {
             instanceMap[instanceId] = { id: instanceId };
           }
-          
+
           // Parse the field value
           let value: any = cred.value;
           if (field === 'isEnabled' || field === 'isPrimary' || field === 'isHealthy') {
@@ -454,11 +460,11 @@ class CredentialsService {
           } else if (field === 'responseTimeMs' || field === 'modelsAvailable' || field === 'loadBalancingWeight') {
             value = parseInt(cred.value || '0', 10);
           }
-          
+
           (instanceMap[instanceId] as any)[field] = value;
         }
       });
-      
+
       // Convert to array and ensure required fields
       Object.values(instanceMap).forEach(instance => {
         if (instance.id && instance.name && instance.baseUrl) {
@@ -477,7 +483,7 @@ class CredentialsService {
           });
         }
       });
-      
+
       return instances;
     } catch (error) {
       console.error('Failed to load Ollama instances from database:', error);
@@ -492,10 +498,10 @@ class CredentialsService {
       for (const cred of existingCredentials) {
         await this.deleteCredential(cred.key);
       }
-      
+
       // Add new instance credentials
       const promises: Promise<any>[] = [];
-      
+
       instances.forEach(instance => {
         const fields: Record<string, any> = {
           name: instance.name,
@@ -505,7 +511,7 @@ class CredentialsService {
           instanceType: instance.instanceType || 'both',
           loadBalancingWeight: instance.loadBalancingWeight || 100
         };
-        
+
         // Add optional health-related fields
         if (instance.isHealthy !== undefined) {
           fields.isHealthy = instance.isHealthy;
@@ -519,7 +525,7 @@ class CredentialsService {
         if (instance.lastHealthCheck) {
           fields.lastHealthCheck = instance.lastHealthCheck;
         }
-        
+
         // Create a credential for each field
         Object.entries(fields).forEach(([field, value]) => {
           promises.push(
@@ -532,7 +538,7 @@ class CredentialsService {
           );
         });
       });
-      
+
       await Promise.all(promises);
     } catch (error) {
       throw this.handleCredentialError(error, 'Saving Ollama instances');
@@ -548,11 +554,11 @@ class CredentialsService {
   async updateOllamaInstance(instanceId: string, updates: Partial<OllamaInstance>): Promise<void> {
     const instances = await this.getOllamaInstances();
     const instanceIndex = instances.findIndex(inst => inst.id === instanceId);
-    
+
     if (instanceIndex === -1) {
       throw new Error(`Ollama instance with ID ${instanceId} not found`);
     }
-    
+
     instances[instanceIndex] = { ...instances[instanceIndex], ...updates };
     await this.setOllamaInstances(instances);
   }
@@ -560,11 +566,11 @@ class CredentialsService {
   async removeOllamaInstance(instanceId: string): Promise<void> {
     const instances = await this.getOllamaInstances();
     const filteredInstances = instances.filter(inst => inst.id !== instanceId);
-    
+
     if (filteredInstances.length === instances.length) {
       throw new Error(`Ollama instance with ID ${instanceId} not found`);
     }
-    
+
     await this.setOllamaInstances(filteredInstances);
   }
 
@@ -575,24 +581,24 @@ class CredentialsService {
       if (existingInstances.length > 0) {
         return { migrated: false, instanceCount: 0 };
       }
-      
+
       // Try to load from localStorage
       const localStorageData = localStorage.getItem('ollama-instances');
       if (!localStorageData) {
         return { migrated: false, instanceCount: 0 };
       }
-      
+
       const localInstances = JSON.parse(localStorageData);
       if (!Array.isArray(localInstances) || localInstances.length === 0) {
         return { migrated: false, instanceCount: 0 };
       }
-      
+
       // Migrate to database
       await this.setOllamaInstances(localInstances);
-      
+
       // Clean up localStorage
       localStorage.removeItem('ollama-instances');
-      
+
       return { migrated: true, instanceCount: localInstances.length };
     } catch (error) {
       console.error('Failed to migrate Ollama instances from localStorage:', error);

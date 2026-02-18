@@ -522,7 +522,7 @@ export const RAGSettings = ({
   useEffect(() => {
     const testConnections = async () => {
       // Test all supported providers
-      const providers = ['openai', 'google', 'anthropic', 'openrouter', 'grok'];
+      const providers = ['openai', 'google', 'anthropic', 'openrouter', 'grok', 'vllm'];
 
       for (const provider of providers) {
         // Don't test if we've already checked recently (within last 30 seconds)
@@ -1378,8 +1378,8 @@ export const RAGSettings = ({
                   src={provider.logo}
                   alt={`${provider.name} logo`}
                   className={`w-8 h-8 mb-1 mx-auto ${provider.key === 'openai' || provider.key === 'grok'
-                      ? 'bg-white rounded p-1'
-                      : ''
+                    ? 'bg-white rounded p-1'
+                    : ''
                     }`}
                 />
               ) : (
@@ -1507,6 +1507,8 @@ export const RAGSettings = ({
               // Ensure instance configurations are synced with ragSettings before saving
               const updatedSettings = {
                 ...ragSettings,
+                LLM_PROVIDER: chatProvider,
+                EMBEDDING_PROVIDER: embeddingProvider,
                 LLM_BASE_URL: chatProvider !== 'vllm' ? llmInstanceConfig.url : (ragSettings.LLM_BASE_URL || ''),
                 LLM_INSTANCE_NAME: llmInstanceConfig.name,
                 OLLAMA_EMBEDDING_URL: embeddingProvider !== 'vllm' ? embeddingInstanceConfig.url : (ragSettings.OLLAMA_EMBEDDING_URL || ''),
@@ -1550,7 +1552,7 @@ export const RAGSettings = ({
                 </p>
               </div>
               <div className={`text-sm font-medium ${(activeSelection === 'chat' ? llmStatus.online : embeddingStatus.online)
-                  ? "text-teal-400" : "text-red-400"
+                ? "text-teal-400" : "text-red-400"
                 }`}>
                 {(activeSelection === 'chat' ? llmStatus.online : embeddingStatus.online)
                   ? "Online" : "Offline"}
