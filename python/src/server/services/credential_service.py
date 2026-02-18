@@ -450,7 +450,7 @@ class CredentialService:
             api_key = await self._get_provider_api_key(provider)
 
             # Get base URL if needed
-            base_url = self._get_provider_base_url(provider, rag_settings)
+            base_url = self._get_provider_base_url(provider, rag_settings, service_type=service_type)
 
             # Get models with provider-specific fallback logic
             chat_model = rag_settings.get("MODEL_CHOICE", "")
@@ -505,9 +505,15 @@ class CredentialService:
             return api_key
         return "ollama" if provider == "ollama" else None
 
-    def _get_provider_base_url(self, provider: str, rag_settings: dict) -> str | None:
+    def _get_provider_base_url(self, provider: str, rag_settings: dict, service_type: str = "llm") -> str | None:
         """Get base URL for provider."""
         if provider == "ollama":
+            if service_type == "embedding":
+                return (
+                    rag_settings.get("OLLAMA_EMBEDDING_URL")
+                    or os.getenv("OLLAMA_EMBEDDING_URL", "")
+                    or rag_settings.get("LLM_BASE_URL", "http://host.docker.internal:11434/v1")
+                )
             return rag_settings.get("LLM_BASE_URL", "http://host.docker.internal:11434/v1")
         elif provider == "google":
             return "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -518,7 +524,15 @@ class CredentialService:
         elif provider == "grok":
             return "https://api.x.ai/v1"
         elif provider == "vllm":
-            # Reads VLLM_BASE_URL from DB settings; falls back to env var for startup
+            if service_type == "embedding":
+                # Prefer dedicated embedding endpoint when configured
+                return (
+                    rag_settings.get("VLLM_EMBEDDING_URL")
+                    or os.getenv("VLLM_EMBEDDING_URL", "")
+                    or rag_settings.get("VLLM_BASE_URL")
+                    or os.getenv("VLLM_BASE_URL", "")
+                )
+            # Chat/completions endpoint
             return rag_settings.get("VLLM_BASE_URL") or os.getenv("VLLM_BASE_URL", "")
         return None  # Use default for OpenAI
 
