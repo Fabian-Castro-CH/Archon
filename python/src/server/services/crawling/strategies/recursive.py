@@ -43,6 +43,7 @@ class RecursiveCrawlStrategy:
         max_concurrent: int | None = None,
         progress_callback: Callable[..., Awaitable[None]] | None = None,
         cancellation_check: Callable[[], None] | None = None,
+        include_raw_html: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Recursively crawl internal links from start URLs up to a maximum depth with progress reporting.
@@ -89,6 +90,8 @@ class RecursiveCrawlStrategy:
             if memory_threshold != raw_memory_threshold:
                 logger.warning(f"Invalid MEMORY_THRESHOLD_PERCENT={raw_memory_threshold}, clamped to {memory_threshold}")
             check_interval = float(settings.get("DISPATCHER_CHECK_INTERVAL", "0.5"))
+            raw_html_max_chars = int(settings.get("CRAWL_RESULT_HTML_MAX_CHARS", "200000"))
+            html_max_chars = max(0, raw_html_max_chars)
         except (ValueError, KeyError, TypeError) as e:
             # Critical configuration errors should fail fast
             logger.error(f"Invalid crawl settings format: {e}", exc_info=True)
@@ -103,6 +106,7 @@ class RecursiveCrawlStrategy:
                 max_concurrent = 10  # Safe default to prevent memory issues
             memory_threshold = 80.0
             check_interval = 0.5
+            html_max_chars = 200000
             settings = {}  # Empty dict for defaults
 
         # Check if start URLs include documentation sites
@@ -290,10 +294,18 @@ class RecursiveCrawlStrategy:
                                 if extracted_title:
                                     title = extracted_title
 
+                        raw_html = result.html if include_raw_html else ""
+                        if raw_html and html_max_chars > 0 and len(raw_html) > html_max_chars:
+                            logger.debug(
+                                f"Truncating HTML for memory control | url={original_url} | "
+                                f"original_len={len(raw_html)} | max_len={html_max_chars}"
+                            )
+                            raw_html = raw_html[:html_max_chars]
+
                         results_all.append({
                             "url": original_url,
                             "markdown": result.markdown.fit_markdown,
-                            "html": result.html,  # Always use raw HTML for code extraction
+                            "html": raw_html,
                             "title": title,
                         })
                         depth_successful += 1

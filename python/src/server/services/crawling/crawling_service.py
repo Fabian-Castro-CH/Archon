@@ -251,6 +251,7 @@ class CrawlingService:
         max_concurrent: int | None = None,
         progress_callback: Callable[[str, int, str], Awaitable[None]] | None = None,
         link_text_fallbacks: dict[str, str] | None = None,
+        include_raw_html: bool = True,
     ) -> list[dict[str, Any]]:
         """Batch crawl multiple URLs in parallel."""
         return await self.batch_strategy.crawl_batch_with_progress(
@@ -261,6 +262,7 @@ class CrawlingService:
             progress_callback,
             self._check_cancellation,  # Pass cancellation check
             link_text_fallbacks,  # Pass link text fallbacks
+            include_raw_html,
         )
 
     async def crawl_recursive_with_progress(
@@ -269,6 +271,7 @@ class CrawlingService:
         max_depth: int = 3,
         max_concurrent: int | None = None,
         progress_callback: Callable[[str, int, str], Awaitable[None]] | None = None,
+        include_raw_html: bool = True,
     ) -> list[dict[str, Any]]:
         """Recursively crawl internal links from start URLs."""
         return await self.recursive_strategy.crawl_recursive_with_progress(
@@ -279,6 +282,7 @@ class CrawlingService:
             max_concurrent,
             progress_callback,
             self._check_cancellation,  # Pass cancellation check
+            include_raw_html,
         )
 
     # Orchestration methods
@@ -861,6 +865,7 @@ class CrawlingService:
         """
         crawl_results = []
         crawl_type = None
+        include_raw_html = bool(request.get("extract_code_examples", True))
 
         # Helper to update progress with mapper
         async def update_crawl_progress(stage_progress: int, message: str, **kwargs):
@@ -933,6 +938,7 @@ class CrawlingService:
                                     max_concurrent=request.get('max_concurrent'),
                                     progress_callback=await self._create_crawl_progress_callback("crawling"),
                                     link_text_fallbacks=url_to_link_text,
+                                    include_raw_html=include_raw_html,
                                 )
 
                                 # Combine original llms.txt with linked pages
@@ -998,6 +1004,7 @@ class CrawlingService:
                                 max_depth=max_depth - 1,  # Reduce depth since we're already 1 level deep
                                 max_concurrent=request.get('max_concurrent'),
                                 progress_callback=await self._create_crawl_progress_callback("crawling"),
+                                include_raw_html=include_raw_html,
                             )
                         else:
                             # Use normal batch crawling (with link text fallbacks)
@@ -1007,6 +1014,7 @@ class CrawlingService:
                                 max_concurrent=request.get('max_concurrent'),  # None -> use DB settings
                                 progress_callback=await self._create_crawl_progress_callback("crawling"),
                                 link_text_fallbacks=url_to_link_text,  # Pass link text for title fallback
+                                include_raw_html=include_raw_html,
                             )
 
                         # Combine original text file results with batch results
@@ -1053,6 +1061,7 @@ class CrawlingService:
                 crawl_results = await self.crawl_batch_with_progress(
                     sitemap_urls,
                     progress_callback=await self._create_crawl_progress_callback("crawling"),
+                    include_raw_html=include_raw_html,
                 )
 
         elif self.url_handler.is_binary_file(url) or self.url_handler.is_download_endpoint(url):
@@ -1085,6 +1094,7 @@ class CrawlingService:
                 max_depth=max_depth,
                 max_concurrent=None,  # Let strategy use settings
                 progress_callback=await self._create_crawl_progress_callback("crawling"),
+                include_raw_html=include_raw_html,
             )
 
         return crawl_results, crawl_type
