@@ -340,8 +340,8 @@ async def get_llm_client(
         # Get provider configuration from database settings
         if provider:
             # Explicit provider requested - get minimal config
-            provider_name = provider
-            api_key = await credential_service._get_provider_api_key(provider)
+            provider_name = str(provider).strip().lower()
+            api_key = await credential_service._get_provider_api_key(provider_name)
 
             # Check cache for rag_settings
             cache_key = "rag_strategy_settings"
@@ -354,9 +354,10 @@ async def get_llm_client(
                 logger.debug("Using cached rag_strategy settings")
 
             # For Ollama, don't use the base_url from config - let _get_optimal_ollama_instance decide
+            service_type = "embedding" if use_embedding_provider else "llm"
             base_url = (
-                credential_service._get_provider_base_url(provider, rag_settings)
-                if provider != "ollama"
+                credential_service._get_provider_base_url(provider_name, rag_settings, service_type=service_type)
+                if provider_name != "ollama"
                 else None
             )
         else:
@@ -373,7 +374,7 @@ async def get_llm_client(
             else:
                 logger.debug(f"Using cached {service_type} provider config")
 
-            provider_name = provider_config["provider"]
+            provider_name = str(provider_config["provider"]).strip().lower()
             api_key = provider_config["api_key"]
             # For Ollama, don't use the base_url from config - let _get_optimal_ollama_instance decide
             base_url = provider_config["base_url"] if provider_name != "ollama" else None
