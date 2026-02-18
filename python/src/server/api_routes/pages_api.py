@@ -150,13 +150,14 @@ async def get_page_by_url(url: str = Query(..., description="The URL of the page
         client = get_supabase_client()
 
         # Query by URL
-        result = client.table("archon_page_metadata").select("*").eq("url", url).single().execute()
+        result = client.table("archon_page_metadata").select("*").eq("url", url).limit(1).execute()
 
-        if not result.data:
+        page_record = result.data[0] if isinstance(result.data, list) and result.data else None
+        if not page_record:
             raise HTTPException(status_code=404, detail=f"Page not found for URL: {url}")
 
         # Handle large pages
-        page_data = _handle_large_page_content(result.data.copy())
+        page_data = _handle_large_page_content(page_record.copy())
         return PageResponse(**page_data)
 
     except HTTPException:
@@ -182,13 +183,14 @@ async def get_page_by_id(page_id: str):
         client = get_supabase_client()
 
         # Query by ID
-        result = client.table("archon_page_metadata").select("*").eq("id", page_id).single().execute()
+        result = client.table("archon_page_metadata").select("*").eq("id", page_id).limit(1).execute()
 
-        if not result.data:
+        page_record = result.data[0] if isinstance(result.data, list) and result.data else None
+        if not page_record:
             raise HTTPException(status_code=404, detail=f"Page not found: {page_id}")
 
         # Handle large pages
-        page_data = _handle_large_page_content(result.data.copy())
+        page_data = _handle_large_page_content(page_record.copy())
         return PageResponse(**page_data)
 
     except HTTPException:

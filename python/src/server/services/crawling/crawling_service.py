@@ -272,6 +272,8 @@ class CrawlingService:
         max_concurrent: int | None = None,
         progress_callback: Callable[[str, int, str], Awaitable[None]] | None = None,
         include_raw_html: bool = True,
+        result_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        collect_results: bool = True,
     ) -> list[dict[str, Any]]:
         """Recursively crawl internal links from start URLs."""
         return await self.recursive_strategy.crawl_recursive_with_progress(
@@ -283,6 +285,8 @@ class CrawlingService:
             progress_callback,
             self._check_cancellation,  # Pass cancellation check
             include_raw_html,
+            result_callback,
+            collect_results,
         )
 
     # Orchestration methods
@@ -366,6 +370,133 @@ class CrawlingService:
             safe_logfire_info(
                 f"Generated unique source_id '{original_source_id}' and display name '{source_display_name}' from URL '{url}'"
             )
+
+            # Streaming storage settings (persist while crawling to reduce memory pressure)
+            stream_storage_enabled = bool(request.get("stream_storage", True))
+            stream_batch_pages = max(1, int(request.get("stream_storage_batch_pages", 20)))
+            stream_buffer: list[dict[str, Any]] = []
+            stream_total_pages = 0
+            stream_total_chunks = 0
+            stream_total_code_examples = 0
+            stream_source_id: str | None = None
+
+            # Calculate total work units for progress tracking if needed before full crawl finishes
+            total_pages_hint = 0
+
+            # Process and store documents using document storage operations
+            last_logged_progress = 0
+
+            async def doc_storage_callback(
+                status: str, progress: int, message: str, **kwargs
+            ):
+                nonlocal last_logged_progress
+
+                should_log_debug = (
+                    status != "document_storage"
+                    or progress == 100
+                    or progress == 0
+                    or abs(progress - last_logged_progress) >= 5
+                )
+
+                if should_log_debug:
+                    safe_logfire_info(
+                        f"Document storage progress: {progress}% | status={status} | "
+                        f"message={message[:50]}..." + ("..." if len(message) > 50 else "")
+                    )
+                    last_logged_progress = progress
+
+                if self.progress_tracker:
+                    mapped_progress = self.progress_mapper.map_progress("document_storage", progress)
+                    await self.progress_tracker.update(
+                        status="document_storage",
+                        progress=mapped_progress,
+                        log=message,
+                        total_pages=total_pages_hint,
+                        **kwargs
+                    )
+
+            async def code_progress_callback(data: dict):
+                if self.progress_tracker:
+                    raw_progress = data.get("progress", data.get("percentage", 0))
+                    mapped_progress = self.progress_mapper.map_progress("code_extraction", raw_progress)
+
+                    await self.progress_tracker.update(
+                        status=data.get("status", "code_extraction"),
+                        progress=mapped_progress,
+                        log=data.get("log", "Extracting code examples..."),
+                        total_pages=total_pages_hint,
+                        **{k: v for k, v in data.items() if k not in ["status", "progress", "percentage", "log"]}
+                    )
+
+            async def flush_stream_buffer(crawl_type_value: str, source_url_value: str) -> None:
+                nonlocal stream_total_chunks, stream_total_code_examples, stream_source_id
+                if not stream_buffer:
+                    return
+
+                docs_to_store = list(stream_buffer)
+                stream_buffer.clear()
+
+                storage_results = await self.doc_storage_ops.process_and_store_documents(
+                    docs_to_store,
+                    request,
+                    crawl_type_value,
+                    original_source_id,
+                    doc_storage_callback,
+                    self._check_cancellation,
+                    source_url=source_url_value,
+                    source_display_name=source_display_name,
+                    url_to_page_id=None,
+                )
+
+                stream_total_chunks += storage_results.get("chunks_stored", 0)
+                stream_source_id = storage_results.get("source_id", stream_source_id)
+
+                if request.get("extract_code_examples", True) and storage_results.get("chunks_stored", 0) > 0:
+                    provider = request.get("provider")
+                    embedding_provider = None
+
+                    if not provider:
+                        try:
+                            provider_config = await credential_service.get_active_provider("llm")
+                            provider = provider_config.get("provider", "openai")
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to get provider from credential service: {e}, defaulting to openai"
+                            )
+                            provider = "openai"
+
+                    try:
+                        embedding_config = await credential_service.get_active_provider("embedding")
+                        embedding_provider = embedding_config.get("provider")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to get embedding provider from credential service: {e}. Using configured default."
+                        )
+                        embedding_provider = None
+
+                    try:
+                        extracted_count = await self.doc_storage_ops.extract_and_store_code_examples(
+                            docs_to_store,
+                            storage_results["url_to_full_document"],
+                            storage_results["source_id"],
+                            code_progress_callback,
+                            self._check_cancellation,
+                            provider,
+                            embedding_provider,
+                        )
+                        stream_total_code_examples += extracted_count
+                    except RuntimeError as e:
+                        logger.error("Code extraction failed for stream batch", exc_info=True)
+                        safe_logfire_error(f"Stream batch code extraction failed | error={e}")
+
+                await send_heartbeat_if_needed()
+
+            async def stream_result_callback(result_doc: dict[str, Any]) -> None:
+                nonlocal stream_total_pages
+                stream_buffer.append(result_doc)
+                stream_total_pages += 1
+                if len(stream_buffer) >= stream_batch_pages:
+                    await flush_stream_buffer("normal", url)
 
             # Helper to update progress with mapper
             async def update_mapped_progress(
@@ -473,6 +604,8 @@ class CrawlingService:
                 discovery_request["is_discovery_target"] = True
                 discovery_request["original_domain"] = self.url_handler.get_base_url(discovered_url)
 
+                discovery_request["_stream_result_callback"] = stream_result_callback if stream_storage_enabled else None
+                discovery_request["_collect_crawl_results"] = not stream_storage_enabled
                 crawl_results, crawl_type = await self._crawl_by_url_type(discovered_url, discovery_request)
 
             else:
@@ -486,7 +619,12 @@ class CrawlingService:
 
                 # Crawl the main URL
                 safe_logfire_info(f"No discovery file found, crawling main URL: {url}")
+                request["_stream_result_callback"] = stream_result_callback if stream_storage_enabled else None
+                request["_collect_crawl_results"] = not stream_storage_enabled
                 crawl_results, crawl_type = await self._crawl_by_url_type(url, request)
+
+            if stream_storage_enabled and crawl_type == "normal":
+                await flush_stream_buffer("normal", url)
 
             # Update progress tracker with crawl type
             if self.progress_tracker and crawl_type:
@@ -505,7 +643,7 @@ class CrawlingService:
             # Send heartbeat after potentially long crawl operation
             await send_heartbeat_if_needed()
 
-            if not crawl_results:
+            if not crawl_results and stream_total_pages == 0:
                 raise ValueError("No content was crawled from the provided URL")
 
             # Processing stage
@@ -514,56 +652,29 @@ class CrawlingService:
             # Check for cancellation before document processing
             self._check_cancellation()
 
-            # Calculate total work units for accurate progress tracking
-            total_pages = len(crawl_results)
+            total_pages = stream_total_pages if (stream_storage_enabled and crawl_type == "normal") else len(crawl_results)
+            total_pages_hint = total_pages
 
-            # Process and store documents using document storage operations
-            last_logged_progress = 0
-
-            async def doc_storage_callback(
-                status: str, progress: int, message: str, **kwargs
-            ):
-                nonlocal last_logged_progress
-
-                # Log only significant progress milestones (every 5%) or status changes
-                should_log_debug = (
-                    status != "document_storage" or  # Status changes
-                    progress == 100 or  # Completion
-                    progress == 0 or  # Start
-                    abs(progress - last_logged_progress) >= 5  # 5% progress changes
+            if stream_storage_enabled and crawl_type == "normal":
+                storage_results = {
+                    "chunk_count": stream_total_chunks,
+                    "chunks_stored": stream_total_chunks,
+                    "total_word_count": 0,
+                    "url_to_full_document": {},
+                    "source_id": stream_source_id or original_source_id,
+                }
+            else:
+                storage_results = await self.doc_storage_ops.process_and_store_documents(
+                    crawl_results,
+                    request,
+                    crawl_type,
+                    original_source_id,
+                    doc_storage_callback,
+                    self._check_cancellation,
+                    source_url=url,
+                    source_display_name=source_display_name,
+                    url_to_page_id=None,  # Will be populated after page storage
                 )
-
-                if should_log_debug:
-                    safe_logfire_info(
-                        f"Document storage progress: {progress}% | status={status} | "
-                        f"message={message[:50]}..." + ("..." if len(message) > 50 else "")
-                    )
-                    last_logged_progress = progress
-
-                if self.progress_tracker:
-                    # Use ProgressMapper to ensure progress never goes backwards
-                    mapped_progress = self.progress_mapper.map_progress("document_storage", progress)
-
-                    # Update progress state via tracker
-                    await self.progress_tracker.update(
-                        status="document_storage",
-                        progress=mapped_progress,
-                        log=message,
-                        total_pages=total_pages,
-                        **kwargs
-                    )
-
-            storage_results = await self.doc_storage_ops.process_and_store_documents(
-                crawl_results,
-                request,
-                crawl_type,
-                original_source_id,
-                doc_storage_callback,
-                self._check_cancellation,
-                source_url=url,
-                source_display_name=source_display_name,
-                url_to_page_id=None,  # Will be populated after page storage
-            )
 
             # Update progress tracker with source_id now that it's created
             if self.progress_tracker and storage_results.get("source_id"):
@@ -604,28 +715,14 @@ class CrawlingService:
                 raise ValueError(error_msg)
 
             # Extract code examples if requested
-            code_examples_count = 0
-            if request.get("extract_code_examples", True) and actual_chunks_stored > 0:
+            code_examples_count = stream_total_code_examples if (stream_storage_enabled and crawl_type == "normal") else 0
+            if request.get("extract_code_examples", True) and actual_chunks_stored > 0 and not (
+                stream_storage_enabled and crawl_type == "normal"
+            ):
                 # Check for cancellation before starting code extraction
                 self._check_cancellation()
 
                 await update_mapped_progress("code_extraction", 0, "Starting code extraction...")
-
-                # Create progress callback for code extraction
-                async def code_progress_callback(data: dict):
-                    if self.progress_tracker:
-                        # Use ProgressMapper to ensure progress never goes backwards
-                        raw_progress = data.get("progress", data.get("percentage", 0))
-                        mapped_progress = self.progress_mapper.map_progress("code_extraction", raw_progress)
-
-                        # Update progress state via tracker
-                        await self.progress_tracker.update(
-                            status=data.get("status", "code_extraction"),
-                            progress=mapped_progress,
-                            log=data.get("log", "Extracting code examples..."),
-                            total_pages=total_pages,  # Include total context
-                            **{k: v for k, v in data.items() if k not in ["status", "progress", "percentage", "log"]}
-                        )
 
                 try:
                     # Extract provider from request or use credential service default
@@ -866,6 +963,8 @@ class CrawlingService:
         crawl_results = []
         crawl_type = None
         include_raw_html = bool(request.get("extract_code_examples", True))
+        stream_result_callback = request.get("_stream_result_callback")
+        collect_crawl_results = bool(request.get("_collect_crawl_results", True))
 
         # Helper to update progress with mapper
         async def update_crawl_progress(stage_progress: int, message: str, **kwargs):
@@ -1005,6 +1104,8 @@ class CrawlingService:
                                 max_concurrent=request.get('max_concurrent'),
                                 progress_callback=await self._create_crawl_progress_callback("crawling"),
                                 include_raw_html=include_raw_html,
+                                result_callback=stream_result_callback,
+                                collect_results=collect_crawl_results,
                             )
                         else:
                             # Use normal batch crawling (with link text fallbacks)
@@ -1095,6 +1196,8 @@ class CrawlingService:
                 max_concurrent=None,  # Let strategy use settings
                 progress_callback=await self._create_crawl_progress_callback("crawling"),
                 include_raw_html=include_raw_html,
+                result_callback=stream_result_callback,
+                collect_results=collect_crawl_results,
             )
 
         return crawl_results, crawl_type

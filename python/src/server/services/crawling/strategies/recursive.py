@@ -44,6 +44,8 @@ class RecursiveCrawlStrategy:
         progress_callback: Callable[..., Awaitable[None]] | None = None,
         cancellation_check: Callable[[], None] | None = None,
         include_raw_html: bool = True,
+        result_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        collect_results: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Recursively crawl internal links from start URLs up to a maximum depth with progress reporting.
@@ -302,12 +304,16 @@ class RecursiveCrawlStrategy:
                             )
                             raw_html = raw_html[:html_max_chars]
 
-                        results_all.append({
+                        crawled_doc = {
                             "url": original_url,
                             "markdown": result.markdown.fit_markdown,
                             "html": raw_html,
                             "title": title,
-                        })
+                        }
+                        if result_callback:
+                            await result_callback(crawled_doc)
+                        if collect_results:
+                            results_all.append(crawled_doc)
                         depth_successful += 1
 
                         # Find internal links for next depth
@@ -338,7 +344,10 @@ class RecursiveCrawlStrategy:
                             )
 
                         if download_fallback_result:
-                            results_all.append(download_fallback_result)
+                            if result_callback:
+                                await result_callback(download_fallback_result)
+                            if collect_results:
+                                results_all.append(download_fallback_result)
                             depth_successful += 1
                             logger.info(f"Recovered downloadable document via fallback: {original_url}")
                         else:

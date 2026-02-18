@@ -252,7 +252,7 @@ class ProjectService:
             tasks_count = len(tasks_response.data) if tasks_response.data else 0
 
             # Delete the project (tasks will be deleted by cascade)
-            response = (
+            (
                 self.supabase_client.table("archon_projects")
                 .delete()
                 .eq("id", project_id)
@@ -283,14 +283,15 @@ class ProjectService:
                 self.supabase_client.table("archon_projects")
                 .select("features")
                 .eq("id", project_id)
-                .single()
+                .limit(1)
                 .execute()
             )
 
-            if not response.data:
+            project_row = response.data[0] if isinstance(response.data, list) and response.data else None
+            if not project_row:
                 return False, {"error": "Project not found"}
 
-            features = response.data.get("features", [])
+            features = project_row.get("features", [])
 
             # Extract feature labels for dropdown options
             feature_options = []

@@ -143,7 +143,6 @@ class KnowledgeItemService:
                     display_url = source_url
                 else:
                     display_url = first_urls.get(source_id, f"source://{source_id}")
-                
                 code_examples_count = code_example_counts.get(source_id, 0)
                 chunks_count = chunk_counts.get(source_id, 0)
 
@@ -217,15 +216,16 @@ class KnowledgeItemService:
                 self.supabase.from_("archon_sources")
                 .select("*")
                 .eq("source_id", source_id)
-                .single()
+                .limit(1)
                 .execute()
             )
 
-            if not result.data:
+            source_row = result.data[0] if isinstance(result.data, list) and result.data else None
+            if not source_row:
                 return None
 
             # Transform the source to item format
-            item = await self._transform_source_to_item(result.data)
+            item = await self._transform_source_to_item(source_row)
             return item
 
         except Exception as e:
