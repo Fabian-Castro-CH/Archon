@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ...config.logfire_config import get_logger, safe_logfire_error, safe_logfire_info
+from ..credential_service import credential_service
 from ..source_management_service import extract_source_summary, update_source_info
 from ..storage.document_storage_service import add_documents_to_supabase
 from ..storage.storage_services import DocumentStorageService
@@ -65,16 +66,14 @@ class DocumentStorageOperations:
         # Reuse initialized storage service for chunking
         storage_service = self.doc_storage_service
 
-        # Prepare data for chunked storage
-        all_urls = []
-        all_chunk_numbers = []
-        all_contents = []
-        all_metadatas = []
-        source_word_counts = {}
+        source_word_counts = {original_source_id: 0}
         url_to_full_document = {}
         processed_docs = 0
+        prepared_documents: list[dict[str, str]] = []
+        source_summary_contents: list[str] = []
+        source_summary_metadatas: list[dict[str, Any]] = []
 
-        # Process and chunk each document
+        # Prepare documents for storage and source metadata
         for doc_index, doc in enumerate(crawl_results):
             # Check for cancellation during document processing
             if cancellation_check:
@@ -103,76 +102,64 @@ class DocumentStorageOperations:
             # Store full document for code extraction context
             url_to_full_document[doc_url] = markdown_content
 
-            # CHUNK THE CONTENT
-            chunks = await storage_service.smart_chunk_text_async(markdown_content, chunk_size=5000)
-
-            # Use the original source_id for all documents
-            source_id = original_source_id
-            safe_logfire_info(f"Using original source_id '{source_id}' for URL '{doc_url}'")
-
-            # Process each chunk
-            for i, chunk in enumerate(chunks):
-                # Check for cancellation during chunk processing
-                if cancellation_check and i % 10 == 0:  # Check every 10 chunks
-                    try:
-                        cancellation_check()
-                    except asyncio.CancelledError:
-                        if progress_callback:
-                            await progress_callback(
-                                "cancelled",
-                                99,
-                                f"Chunk processing cancelled at chunk {i + 1}/{len(chunks)} of document {doc_index + 1}"
-                            )
-                        raise
-
-                all_urls.append(doc_url)
-                all_chunk_numbers.append(i)
-                all_contents.append(chunk)
-
-                # Create metadata for each chunk (page_id will be set later)
-                word_count = len(chunk.split())
-                metadata = {
+            prepared_documents.append(
+                {
                     "url": doc_url,
-                    "title": doc.get("title", ""),
-                    "description": doc.get("description", ""),
-                    "source_id": source_id,
-                    "knowledge_type": request.get("knowledge_type", "documentation"),
-                    "page_id": None,  # Will be set after pages are stored
-                    "crawl_type": crawl_type,
-                    "word_count": word_count,
-                    "char_count": len(chunk),
-                    "chunk_index": i,
-                    "tags": request.get("tags", []),
+                    "markdown": markdown_content,
+                    "title": str(doc.get("title", "")),
+                    "description": str(doc.get("description", "")),
                 }
-                all_metadatas.append(metadata)
+            )
 
-                # Accumulate word count
-                source_word_counts[source_id] = source_word_counts.get(source_id, 0) + word_count
+            source_word_count = len(markdown_content.split())
+            source_word_counts[original_source_id] = source_word_counts.get(original_source_id, 0) + source_word_count
 
-                # Yield control every 10 chunks to prevent event loop blocking
-                if i > 0 and i % 10 == 0:
-                    await asyncio.sleep(0)
+            # Keep summary inputs bounded to avoid retaining large intermediate text in memory.
+            source_summary_contents.append(markdown_content[:5000])
+            source_summary_metadatas.append(
+                {
+                    "source_id": original_source_id,
+                    "word_count": source_word_count,
+                }
+            )
 
             # Yield control after processing each document
             if doc_index > 0 and doc_index % 5 == 0:
                 await asyncio.sleep(0)
 
+        if not prepared_documents:
+            return {
+                "chunk_count": 0,
+                "chunks_stored": 0,
+                "total_word_count": 0,
+                "url_to_full_document": {},
+                "source_id": original_source_id,
+            }
+
         # Create/update source record FIRST (required for FK constraints on pages and chunks)
-        if all_contents and all_metadatas:
+        if source_summary_contents and source_summary_metadatas:
             await self._create_source_records(
-                all_metadatas, all_contents, source_word_counts, request,
-                source_url, source_display_name
+                source_summary_metadatas,
+                source_summary_contents,
+                source_word_counts,
+                request,
+                source_url,
+                source_display_name,
             )
 
         # Store pages AFTER source is created but BEFORE chunks (FK constraint requirement)
         from .page_storage_operations import PageStorageOperations
+
         page_storage_ops = PageStorageOperations(self.supabase_client)
 
         # Check if this is an llms-full.txt file
         is_llms_full = crawl_type == "llms-txt" or (
-            len(url_to_full_document) == 1 and
-            next(iter(url_to_full_document.keys())).endswith("llms-full.txt")
+            len(url_to_full_document) == 1
+            and next(iter(url_to_full_document.keys())).endswith("llms-full.txt")
         )
+
+        chunk_count = 0
+        chunks_stored = 0
 
         if is_llms_full and url_to_full_document:
             # Handle llms-full.txt with section-based pages
@@ -190,13 +177,13 @@ class DocumentStorageOperations:
 
             # Parse sections and re-chunk each section
             from .helpers.llms_full_parser import parse_llms_full_sections
+
             sections = parse_llms_full_sections(content, base_url)
 
-            # Clear existing chunks and re-create from sections
-            all_urls.clear()
-            all_chunk_numbers.clear()
-            all_contents.clear()
-            all_metadatas.clear()
+            all_urls = []
+            all_chunk_numbers = []
+            all_contents = []
+            all_metadatas = []
             url_to_full_document.clear()
 
             # Chunk each section separately
@@ -227,65 +214,147 @@ class DocumentStorageOperations:
                         "tags": request.get("tags", []),
                     }
                     all_metadatas.append(metadata)
+
+            storage_stats = await add_documents_to_supabase(
+                client=self.supabase_client,
+                urls=all_urls,
+                chunk_numbers=all_chunk_numbers,
+                contents=all_contents,
+                metadatas=all_metadatas,
+                url_to_full_document=url_to_full_document,
+                batch_size=25,
+                progress_callback=progress_callback,
+                enable_parallel_batches=True,
+                provider=None,
+                cancellation_check=cancellation_check,
+                url_to_page_id=url_to_page_id,
+            )
+            chunk_count = len(all_contents)
+            chunks_stored = storage_stats.get("chunks_stored", 0)
         else:
-            # Handle regular pages
-            reconstructed_crawl_results = []
-            for url, markdown in url_to_full_document.items():
-                reconstructed_crawl_results.append({
-                    "url": url,
-                    "markdown": markdown,
-                })
+            url_to_page_id = await page_storage_ops.store_pages(
+                prepared_documents,
+                original_source_id,
+                request,
+                crawl_type,
+            )
 
-            if reconstructed_crawl_results:
-                url_to_page_id = await page_storage_ops.store_pages(
-                    reconstructed_crawl_results,
-                    original_source_id,
-                    request,
-                    crawl_type,
+            try:
+                rag_settings = await credential_service.get_credentials_by_category("rag_strategy")
+                raw_flush_size = int(rag_settings.get("DOCUMENT_STORAGE_FLUSH_CHUNKS", "250"))
+                flush_chunk_size = max(25, raw_flush_size)
+            except Exception as e:
+                logger.warning(f"Failed to load DOCUMENT_STORAGE_FLUSH_CHUNKS setting: {e}")
+                flush_chunk_size = 250
+
+            pending_urls: list[str] = []
+            pending_chunk_numbers: list[int] = []
+            pending_contents: list[str] = []
+            pending_metadatas: list[dict[str, Any]] = []
+            delete_done = False
+            deletion_urls = list(url_to_full_document.keys())
+
+            async def flush_pending_chunks() -> None:
+                nonlocal delete_done, chunks_stored
+                if not pending_contents:
+                    return
+
+                storage_stats = await add_documents_to_supabase(
+                    client=self.supabase_client,
+                    urls=pending_urls,
+                    chunk_numbers=pending_chunk_numbers,
+                    contents=pending_contents,
+                    metadatas=pending_metadatas,
+                    url_to_full_document=url_to_full_document,
+                    batch_size=25,
+                    progress_callback=progress_callback,
+                    enable_parallel_batches=True,
+                    provider=None,
+                    cancellation_check=cancellation_check,
+                    url_to_page_id=url_to_page_id,
+                    delete_existing_records=not delete_done,
+                    deletion_urls=deletion_urls if not delete_done else None,
                 )
-            else:
-                url_to_page_id = {}
+                chunks_stored += storage_stats.get("chunks_stored", 0)
+                delete_done = True
 
-            # Update all chunk metadata with correct page_id
-            for metadata in all_metadatas:
-                chunk_url = metadata.get("url")
-                if chunk_url and chunk_url in url_to_page_id:
-                    metadata["page_id"] = url_to_page_id[chunk_url]
+                pending_urls.clear()
+                pending_chunk_numbers.clear()
+                pending_contents.clear()
+                pending_metadatas.clear()
+                await asyncio.sleep(0)
 
+            for doc_index, doc in enumerate(prepared_documents):
+                if cancellation_check:
+                    try:
+                        cancellation_check()
+                    except asyncio.CancelledError:
+                        if progress_callback:
+                            await progress_callback(
+                                "cancelled",
+                                99,
+                                f"Chunking cancelled at document {doc_index + 1}/{len(prepared_documents)}",
+                            )
+                        raise
+
+                doc_url = doc["url"]
+                markdown_content = doc["markdown"]
+                chunks = await storage_service.smart_chunk_text_async(markdown_content, chunk_size=5000)
+
+                for chunk_index, chunk in enumerate(chunks):
+                    if cancellation_check and chunk_index % 10 == 0:
+                        try:
+                            cancellation_check()
+                        except asyncio.CancelledError:
+                            if progress_callback:
+                                await progress_callback(
+                                    "cancelled",
+                                    99,
+                                    f"Chunking cancelled at chunk {chunk_index + 1}/{len(chunks)} of document {doc_index + 1}",
+                                )
+                            raise
+
+                    word_count = len(chunk.split())
+                    pending_urls.append(doc_url)
+                    pending_chunk_numbers.append(chunk_index)
+                    pending_contents.append(chunk)
+                    pending_metadatas.append(
+                        {
+                            "url": doc_url,
+                            "title": doc.get("title", ""),
+                            "description": doc.get("description", ""),
+                            "source_id": original_source_id,
+                            "knowledge_type": request.get("knowledge_type", "documentation"),
+                            "page_id": url_to_page_id.get(doc_url),
+                            "crawl_type": crawl_type,
+                            "word_count": word_count,
+                            "char_count": len(chunk),
+                            "chunk_index": chunk_index,
+                            "tags": request.get("tags", []),
+                        }
+                    )
+                    chunk_count += 1
+
+                    if len(pending_contents) >= flush_chunk_size:
+                        await flush_pending_chunks()
+
+                if doc_index > 0 and doc_index % 5 == 0:
+                    await asyncio.sleep(0)
+
+            await flush_pending_chunks()
         safe_logfire_info(f"url_to_full_document keys: {list(url_to_full_document.keys())[:5]}")
 
-        # Log chunking results
-        avg_chunks = (len(all_contents) / processed_docs) if processed_docs > 0 else 0.0
+        avg_chunks = (chunk_count / processed_docs) if processed_docs > 0 else 0.0
         safe_logfire_info(
-            f"Document storage | processed={processed_docs}/{len(crawl_results)} | chunks={len(all_contents)} | avg_chunks_per_doc={avg_chunks:.1f}"
+            f"Document storage | processed={processed_docs}/{len(crawl_results)} | chunks={chunk_count} | avg_chunks_per_doc={avg_chunks:.1f}"
         )
-
-        # Call add_documents_to_supabase with the correct parameters
-        storage_stats = await add_documents_to_supabase(
-            client=self.supabase_client,
-            urls=all_urls,  # Now has entry per chunk
-            chunk_numbers=all_chunk_numbers,  # Proper chunk numbers (0, 1, 2, etc)
-            contents=all_contents,  # Individual chunks
-            metadatas=all_metadatas,  # Metadata per chunk
-            url_to_full_document=url_to_full_document,
-            batch_size=25,  # Increased from 10 for better performance
-            progress_callback=progress_callback,  # Pass the callback for progress updates
-            enable_parallel_batches=True,  # Enable parallel processing
-            provider=None,  # Use configured provider
-            cancellation_check=cancellation_check,  # Pass cancellation check
-            url_to_page_id=url_to_page_id,  # Link chunks to pages
-        )
-
-        # Calculate chunk counts
-        chunk_count = len(all_contents)
-        chunks_stored = storage_stats.get("chunks_stored", 0)
 
         return {
-            'chunk_count': chunk_count,
-            'chunks_stored': chunks_stored,
-            'total_word_count': sum(source_word_counts.values()),
-            'url_to_full_document': url_to_full_document,
-            'source_id': original_source_id
+            "chunk_count": chunk_count,
+            "chunks_stored": chunks_stored,
+            "total_word_count": sum(source_word_counts.values()),
+            "url_to_full_document": url_to_full_document,
+            "source_id": original_source_id,
         }
 
     async def _create_source_records(
