@@ -11,6 +11,7 @@ Active when DB_PROVIDER=postgres + POSTGRES_DSN is set.
 from __future__ import annotations
 
 import logging
+import re
 from enum import Enum, auto
 from typing import Any
 
@@ -50,6 +51,16 @@ def _adapt_value(v: Any) -> Any:
     return v
 
 
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_identifier(identifier: str) -> str:
+    """Safely quote a SQL identifier (column/table name)."""
+    if not _IDENT_RE.match(identifier):
+        raise ValueError(f"Invalid SQL identifier: {identifier!r}")
+    return f'"{identifier}"'
+
+
 def _build_where(filters: list[_Filter]) -> tuple[str, list[Any]]:
     """Build WHERE clause and parameters list from filters."""
     if not filters:
@@ -63,7 +74,7 @@ def _build_where(filters: list[_Filter]) -> tuple[str, list[Any]]:
             if or_clause:
                 clauses.append(f"({or_clause})")
             continue
-        col = psycopg2.extensions.quote_ident(f.column, None)  # type: ignore[arg-type]
+        col = _quote_identifier(f.column)
         if f.kind == "eq":
             clauses.append(f"{col} = %s")
             params.append(_adapt_value(f.value))
@@ -106,7 +117,10 @@ def _parse_or_filter(filter_str: str) -> str:
         if len(segments) < 3:
             continue
         col, op, val = segments
-        col_quoted = f'"{col}"'
+        try:
+            col_quoted = _quote_identifier(col)
+        except ValueError:
+            continue
         if op == "eq":
             sql_parts.append(f"{col_quoted} = '{val}'")
         elif op == "neq":
