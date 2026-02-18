@@ -330,8 +330,8 @@ async def add_documents_to_supabase(
             successful_texts = result.texts_processed
             
             # Get model information for tracking
-            from ..llm_provider_service import get_embedding_model
             from ..credential_service import credential_service
+            from ..llm_provider_service import get_embedding_model
             
             # Get embedding model name
             embedding_model_name = await get_embedding_model(provider=provider)
