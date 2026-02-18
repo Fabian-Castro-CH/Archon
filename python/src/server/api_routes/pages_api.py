@@ -7,6 +7,8 @@ This module handles page retrieval operations for RAG:
 - Get page by URL
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -48,8 +50,8 @@ class PageResponse(BaseModel):
     char_count: int
     chunk_count: int
     metadata: dict
-    created_at: str
-    updated_at: str
+    created_at: datetime | str
+    updated_at: datetime | str
 
 
 class PageListResponse(BaseModel):
