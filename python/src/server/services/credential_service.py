@@ -420,6 +420,8 @@ class CredentialService:
             if service_type == "embedding":
                 # First check for explicit EMBEDDING_PROVIDER setting (new split provider approach)
                 explicit_embedding_provider = rag_settings.get("EMBEDDING_PROVIDER")
+                if isinstance(explicit_embedding_provider, str):
+                    explicit_embedding_provider = explicit_embedding_provider.strip().lower()
 
                 # Validate that embedding provider actually supports embeddings
                 embedding_capable_providers = {"openai", "google", "openrouter", "ollama", "vllm"}
@@ -441,6 +443,8 @@ class CredentialService:
                 # Ensure provider is a valid string, not a boolean or other type
                 if not isinstance(provider, str) or provider.lower() in ("true", "false", "none", "null"):
                     provider = "openai"
+                else:
+                    provider = provider.strip().lower()
 
             # Get API key for this provider
             api_key = await self._get_provider_api_key(provider)

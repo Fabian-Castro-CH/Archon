@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Path
 
 from ..config.logfire_config import logfire
 from ..services.credential_service import credential_service
+
 # Provider validation - simplified inline version
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
@@ -108,7 +109,7 @@ async def get_provider_status(
     """Test provider connectivity using server-side API key (secure)"""
     try:
         # Basic provider validation
-        allowed_providers = {"openai", "ollama", "google", "openrouter", "anthropic", "grok"}
+        allowed_providers = {"openai", "ollama", "google", "openrouter", "anthropic", "grok", "vllm"}
         if provider not in allowed_providers:
             raise HTTPException(
                 status_code=400,

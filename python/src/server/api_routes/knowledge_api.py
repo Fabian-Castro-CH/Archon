@@ -19,7 +19,6 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 # Basic validation - simplified inline version
-
 # Import unified logging
 from ..config.logfire_config import get_logger, safe_logfire_error, safe_logfire_info
 from ..services.crawler_manager import get_crawler
@@ -68,8 +67,9 @@ async def _validate_provider_api_key(provider: str = None) -> None:
         if not provider:
             provider = "openai"
         else:
+            provider = str(provider).strip().lower()
             # Simple provider validation
-            allowed_providers = {"openai", "ollama", "google", "openrouter", "anthropic", "grok"}
+            allowed_providers = {"openai", "ollama", "google", "openrouter", "anthropic", "grok", "vllm"}
             if provider not in allowed_providers:
                 raise HTTPException(
                     status_code=400,
