@@ -7,7 +7,7 @@ Handles URL transformations and validations.
 import hashlib
 import re
 from typing import List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from ....config.logfire_config import get_logger
 
@@ -175,6 +175,67 @@ class URLHandler:
             logger.warning(f"Error checking if URL is binary file: {e}")
             # In case of error, don't skip the URL (safer to attempt crawl than miss content)
             return False
+
+    @staticmethod
+    def is_download_endpoint(url: str) -> bool:
+        """
+        Check whether a URL looks like a download endpoint without explicit file extension.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            True if URL likely triggers a file download, False otherwise
+        """
+        try:
+            parsed = urlparse(url)
+            path = (parsed.path or "").lower()
+            query = parse_qs(parsed.query or "")
+
+            if path.endswith("/files") and "artifact_id" in query:
+                return True
+
+            if any(key in query for key in ("download", "dl", "attachment", "artifact_id", "file", "filename")):
+                return True
+
+            if any(token in path for token in ("/download", "/attachments", "/files")) and parsed.query:
+                return True
+
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking if URL is download endpoint: {e}")
+            return False
+
+    @staticmethod
+    def infer_filename_from_url(url: str) -> str:
+        """
+        Infer a filename from URL path or common query parameters.
+
+        Args:
+            url: URL to inspect
+
+        Returns:
+            Inferred filename or a fallback value
+        """
+        try:
+            parsed = urlparse(url)
+            path_name = (parsed.path.rsplit("/", 1)[-1] or "").strip()
+            if path_name and "." in path_name:
+                return path_name
+
+            query = parse_qs(parsed.query or "")
+            for key in ("filename", "file", "name"):
+                values = query.get(key, [])
+                if values and values[0].strip():
+                    return values[0].strip()
+
+            if "artifact_id" in query and query["artifact_id"]:
+                return f"artifact_{query['artifact_id'][0]}.pdf"
+
+            return "downloaded_document.pdf"
+        except Exception as e:
+            logger.warning(f"Error inferring filename from URL: {e}")
+            return "downloaded_document.pdf"
 
     @staticmethod
     def transform_github_url(url: str) -> str:

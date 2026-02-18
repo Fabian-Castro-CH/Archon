@@ -389,6 +389,8 @@ async def add_documents_to_supabase(
                 
                 if embedding_dim == 768:
                     embedding_column = "embedding_768"
+                elif embedding_dim == 384:
+                    embedding_column = "embedding_384"
                 elif embedding_dim == 1024:
                     embedding_column = "embedding_1024"
                 elif embedding_dim == 1536:

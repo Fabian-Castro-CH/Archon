@@ -13,6 +13,7 @@ from crawl4ai import CacheMode, CrawlerRunConfig, MemoryAdaptiveDispatcher
 
 from ....config.logfire_config import get_logger
 from ...credential_service import credential_service
+from ..helpers.download_handler import try_extract_downloadable_document
 from ..helpers.url_handler import URLHandler
 
 logger = get_logger(__name__)
@@ -310,9 +311,28 @@ class RecursiveCrawlStrategy:
                             elif is_binary:
                                 logger.debug(f"Skipping binary file from crawl queue: {next_url}")
                     else:
-                        logger.warning(
-                            f"Failed to crawl {original_url}: {getattr(result, 'error_message', 'Unknown error')}"
+                        error_message = getattr(result, "error_message", "Unknown error")
+
+                        download_fallback_result = None
+                        should_try_download_fallback = (
+                            "download is starting" in str(error_message).lower()
+                            or self.url_handler.is_download_endpoint(original_url)
                         )
+
+                        if should_try_download_fallback:
+                            download_fallback_result = await asyncio.to_thread(
+                                try_extract_downloadable_document,
+                                original_url,
+                            )
+
+                        if download_fallback_result:
+                            results_all.append(download_fallback_result)
+                            depth_successful += 1
+                            logger.info(f"Recovered downloadable document via fallback: {original_url}")
+                        else:
+                            logger.warning(
+                                f"Failed to crawl {original_url}: {error_message}"
+                            )
 
                     # Skip the confusing "processed X/Y URLs" updates
                     # The "crawling URLs" message at the start of each batch is more accurate

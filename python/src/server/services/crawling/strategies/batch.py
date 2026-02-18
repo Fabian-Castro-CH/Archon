@@ -12,6 +12,8 @@ from crawl4ai import CacheMode, CrawlerRunConfig, MemoryAdaptiveDispatcher
 
 from ....config.logfire_config import get_logger
 from ...credential_service import credential_service
+from ..helpers.download_handler import try_extract_downloadable_document
+from ..helpers.url_handler import URLHandler
 
 logger = get_logger(__name__)
 
@@ -29,6 +31,7 @@ class BatchCrawlStrategy:
         """
         self.crawler = crawler
         self.markdown_generator = markdown_generator
+        self.url_handler = URLHandler()
 
     async def crawl_batch_with_progress(
         self,
@@ -262,9 +265,28 @@ class BatchCrawlStrategy:
                         "title": title,
                     })
                 else:
-                    logger.warning(
-                        f"Failed to crawl {result.url}: {getattr(result, 'error_message', 'Unknown error')}"
+                    original_url = url_mapping.get(result.url, result.url)
+                    error_message = getattr(result, "error_message", "Unknown error")
+
+                    download_fallback_result = None
+                    should_try_download_fallback = (
+                        "download is starting" in str(error_message).lower()
+                        or self.url_handler.is_download_endpoint(original_url)
                     )
+
+                    if should_try_download_fallback:
+                        download_fallback_result = await asyncio.to_thread(
+                            try_extract_downloadable_document,
+                            original_url,
+                        )
+
+                    if download_fallback_result:
+                        successful_results.append(download_fallback_result)
+                        logger.info(f"Recovered downloadable document via fallback: {original_url}")
+                    else:
+                        logger.warning(
+                            f"Failed to crawl {result.url}: {error_message}"
+                        )
 
                 # Report individual URL progress with smooth increments
                 # Calculate progress as percentage of total URLs processed

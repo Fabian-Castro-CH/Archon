@@ -22,9 +22,10 @@ from ..credential_service import credential_service
 # Import operations
 from .discovery_service import DiscoveryService
 from .document_storage_operations import DocumentStorageOperations
-from .helpers.site_config import SiteConfig
 
 # Import helpers
+from .helpers.download_handler import try_extract_downloadable_document
+from .helpers.site_config import SiteConfig
 from .helpers.url_handler import URLHandler
 from .page_storage_operations import PageStorageOperations
 from .progress_mapper import ProgressMapper
@@ -582,6 +583,13 @@ class CrawlingService:
 
             # CRITICAL: Verify that chunks were actually stored
             actual_chunks_stored = storage_results.get("chunks_stored", 0)
+            if storage_results["chunk_count"] == 0:
+                error_msg = (
+                    f"Crawl produced no valid chunks for storage | url={url} | progress_id={self.progress_id}"
+                )
+                safe_logfire_error(error_msg)
+                raise ValueError(error_msg)
+
             if storage_results["chunk_count"] > 0 and actual_chunks_stored == 0:
                 # We processed chunks but none were stored - this is a failure
                 error_msg = (
@@ -1046,6 +1054,18 @@ class CrawlingService:
                     sitemap_urls,
                     progress_callback=await self._create_crawl_progress_callback("crawling"),
                 )
+
+        elif self.url_handler.is_binary_file(url) or self.url_handler.is_download_endpoint(url):
+            # Handle direct downloadable documents (e.g., /files?artifact_id=...)
+            crawl_type = "downloadable_document"
+            await update_crawl_progress(
+                50,
+                "Detected downloadable document URL, extracting text...",
+                crawl_type=crawl_type,
+            )
+
+            fallback_result = await asyncio.to_thread(try_extract_downloadable_document, url)
+            crawl_results = [fallback_result] if fallback_result else []
 
         else:
             # Handle regular webpages with recursive crawling
