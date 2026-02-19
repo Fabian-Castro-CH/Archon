@@ -202,7 +202,7 @@ class RAGService:
             page_groups[group_key]["total_similarity"] += result.get("similarity_score", 0.0)
 
         page_results = []
-        for group_key, data in page_groups.items():
+        for _group_key, data in page_groups.items():
             avg_similarity = data["total_similarity"] / data["chunk_matches"]
             match_boost = min(0.2, data["chunk_matches"] * 0.02)
             aggregate_score = avg_similarity * (1 + match_boost)
@@ -213,7 +213,7 @@ class RAGService:
                     self.supabase_client.table("archon_page_metadata")
                     .select("id, url, section_title, word_count")
                     .eq("id", data["page_id"])
-                    .maybe_single()
+                    .limit(1)
                     .execute()
                 )
             else:
@@ -222,16 +222,17 @@ class RAGService:
                     self.supabase_client.table("archon_page_metadata")
                     .select("id, url, section_title, word_count")
                     .eq("url", data["url"])
-                    .maybe_single()
+                    .limit(1)
                     .execute()
                 )
 
-            if page_info and page_info.data is not None:
+            page_record = page_info.data[0] if page_info and isinstance(page_info.data, list) and page_info.data else None
+            if page_record:
                 page_results.append({
-                    "page_id": page_info.data["id"],
-                    "url": page_info.data["url"],
-                    "section_title": page_info.data.get("section_title"),
-                    "word_count": page_info.data.get("word_count", 0),
+                    "page_id": page_record["id"],
+                    "url": page_record["url"],
+                    "section_title": page_record.get("section_title"),
+                    "word_count": page_record.get("word_count", 0),
                     "chunk_matches": data["chunk_matches"],
                     "aggregate_similarity": aggregate_score,
                     "average_similarity": avg_similarity,
