@@ -102,7 +102,7 @@ async def get_provider_status(
     provider: str = Path(
         ...,
         description="Provider name to test connectivity for",
-        regex="^[a-z0-9_]+$",
+        pattern="^[a-z0-9_]+$",
         max_length=20
     )
 ):

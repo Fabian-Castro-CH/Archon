@@ -76,7 +76,7 @@ export function MainLayout({ children, className }: MainLayoutProps) {
   } = useBackendHealth();
 
   // Track if backend has completely failed (for showing BackendStartupError)
-  const backendStartupFailed = isBackendError && failureCount >= 5;
+  const backendStartupFailed = isBackendError && failureCount >= 5 && !healthData;
 
   // TEMPORARY: Handle onboarding redirect using old logic until migrated
   useEffect(() => {
