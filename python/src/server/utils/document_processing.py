@@ -6,6 +6,7 @@ including PDF, Word documents, and plain text files.
 """
 
 import io
+from collections.abc import Iterator
 
 # Removed direct logging import - using unified config
 
@@ -302,6 +303,94 @@ def extract_text_from_pdf(file_content: bytes) -> str:
 
     # If we get here, no libraries worked
     raise Exception("Failed to extract text from PDF - no working PDF libraries available")
+
+
+def iter_pdf_text_batches(file_content: bytes, pages_per_batch: int = 20) -> Iterator[str]:
+    """
+    Yield PDF text in page batches to avoid keeping full extracted text in memory.
+
+    Args:
+        file_content: Raw PDF bytes
+        pages_per_batch: Number of pages per yielded text batch
+
+    Yields:
+        Text batches with page markers
+    """
+    if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
+        raise Exception(
+            "No PDF processing libraries available. Please install pdfplumber and PyPDF2."
+        )
+
+    pages_per_batch = max(1, int(pages_per_batch))
+
+    def _flush_batch(batch_pages: list[str]) -> str:
+        joined = "\n\n".join(batch_pages)
+        return _preserve_code_blocks_across_pages(joined)
+
+    if PDFPLUMBER_AVAILABLE:
+        try:
+            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+                batch_pages: list[str] = []
+                extracted_pages = 0
+
+                for page_num, page in enumerate(pdf.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if not page_text:
+                            continue
+
+                        batch_pages.append(f"--- Page {page_num + 1} ---\n{page_text}")
+                        extracted_pages += 1
+
+                        if len(batch_pages) >= pages_per_batch:
+                            yield _flush_batch(batch_pages)
+                            batch_pages = []
+                    except Exception as e:
+                        logfire.warning(f"pdfplumber failed on page {page_num + 1}: {e}")
+                        continue
+
+                if batch_pages:
+                    yield _flush_batch(batch_pages)
+
+                if extracted_pages > 0:
+                    return
+        except Exception as e:
+            logfire.warning(f"pdfplumber batch extraction failed: {e}, trying PyPDF2")
+
+    if PYPDF2_AVAILABLE:
+        try:
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+            batch_pages = []
+            extracted_pages = 0
+
+            for page_num, page in enumerate(pdf_reader.pages):
+                try:
+                    page_text = page.extract_text()
+                    if not page_text:
+                        continue
+
+                    batch_pages.append(f"--- Page {page_num + 1} ---\n{page_text}")
+                    extracted_pages += 1
+
+                    if len(batch_pages) >= pages_per_batch:
+                        yield _flush_batch(batch_pages)
+                        batch_pages = []
+                except Exception as e:
+                    logfire.warning(f"PyPDF2 failed on page {page_num + 1}: {e}")
+                    continue
+
+            if batch_pages:
+                yield _flush_batch(batch_pages)
+
+            if extracted_pages == 0:
+                raise ValueError(
+                    "No text extracted from PDF: file may be empty, images-only, or scanned document without OCR"
+                )
+            return
+        except Exception as e:
+            raise Exception("PyPDF2 failed to extract text batches from PDF") from e
+
+    raise Exception("Failed to extract text batches from PDF - no working PDF libraries available")
 
 
 def extract_text_from_docx(file_content: bytes) -> str:

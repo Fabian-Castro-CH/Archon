@@ -19,7 +19,7 @@ class DocumentStorageService(BaseStorageService):
 
     async def upload_document(
         self,
-        file_content: str,
+        file_content: str | None,
         filename: str,
         source_id: str,
         knowledge_type: str = "documentation",
@@ -27,12 +27,13 @@ class DocumentStorageService(BaseStorageService):
         extract_code_examples: bool = True,
         progress_callback: Any | None = None,
         cancellation_check: Any | None = None,
+        text_batches: Any | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """
         Upload and process a document file with progress reporting.
 
         Args:
-            file_content: Document content as text
+            file_content: Document content as text (optional when text_batches is provided)
             filename: Name of the file
             source_id: Source identifier
             knowledge_type: Type of knowledge
@@ -50,7 +51,7 @@ class DocumentStorageService(BaseStorageService):
             "upload_document",
             filename=filename,
             source_id=source_id,
-            content_length=len(file_content),
+            content_length=len(file_content) if file_content else 0,
         ) as span:
             try:
                 # Progress reporting helper
@@ -60,12 +61,14 @@ class DocumentStorageService(BaseStorageService):
 
                 await report_progress("Starting document processing...", 10)
 
-                # Use base class chunking
-                text_batches = self.split_text_for_incremental_chunking(
-                    file_content,
-                    max_chars_per_batch=200_000,
-                    pdf_pages_per_batch=75,
-                )
+                if text_batches is None:
+                    if not file_content:
+                        raise ValueError("file_content is required when text_batches is not provided")
+                    text_batches = self.split_text_for_incremental_chunking(
+                        file_content,
+                        max_chars_per_batch=200_000,
+                        pdf_pages_per_batch=75,
+                    )
 
                 if not text_batches:
                     raise ValueError(
@@ -83,6 +86,14 @@ class DocumentStorageService(BaseStorageService):
                 total_word_count = 0
                 total_chunks = 0
                 delete_done = False
+                max_cached_chars = 200_000
+                cached_document_text = file_content[:max_cached_chars] if file_content else ""
+                summary_seed = file_content[:5000] if file_content else ""
+                title_seed = file_content[:1000] if file_content else ""
+                total_batches = len(text_batches) if hasattr(text_batches, "__len__") else None
+
+                # Create URL to document text mapping (bounded to control memory)
+                url_to_full_document = {doc_url: cached_document_text}
 
                 async def flush_pending_chunks() -> None:
                     nonlocal delete_done
@@ -118,8 +129,25 @@ class DocumentStorageService(BaseStorageService):
                     if cancellation_check:
                         cancellation_check()
 
+                    if not isinstance(text_batch, str) or not text_batch.strip():
+                        continue
+
+                    if not file_content and len(cached_document_text) < max_cached_chars:
+                        remaining = max_cached_chars - len(cached_document_text)
+                        cached_document_text += text_batch[:remaining]
+                        url_to_full_document[doc_url] = cached_document_text
+
+                    if not summary_seed:
+                        summary_seed = text_batch[:5000]
+                    if not title_seed:
+                        title_seed = text_batch[:1000]
+
+                    batch_label = (
+                        f"{batch_index}/{total_batches}" if total_batches is not None else str(batch_index)
+                    )
+
                     await report_progress(
-                        f"Chunking document batch {batch_index}/{len(text_batches)}...",
+                        f"Chunking document batch {batch_label}...",
                         30,
                     )
 
@@ -163,13 +191,10 @@ class DocumentStorageService(BaseStorageService):
 
                 await report_progress("Updating source information...", 50)
 
-                # Create URL to full document mapping
-                url_to_full_document = {doc_url: file_content}
-
                 # Update source information
                 from ..source_management_service import extract_source_summary, update_source_info
 
-                source_summary = await extract_source_summary(source_id, file_content[:5000])
+                source_summary = await extract_source_summary(source_id, summary_seed)
 
                 logger.info(f"Updating source info for {source_id} with knowledge_type={knowledge_type}")
                 await update_source_info(
@@ -177,7 +202,7 @@ class DocumentStorageService(BaseStorageService):
                     source_id,
                     source_summary,
                     total_word_count,
-                    content=file_content[:1000],  # content for title generation
+                    content=title_seed,  # content for title generation
                     knowledge_type=knowledge_type,
                     tags=tags,
                     source_url=f"file://{filename}",
@@ -207,14 +232,16 @@ class DocumentStorageService(BaseStorageService):
                         # content_type: proper type to guide extraction method selection
                         crawl_results = [{
                             "url": doc_url,
-                            "markdown": file_content,  # Cleaned plaintext/markdown content
+                            "markdown": file_content if file_content else cached_document_text,
                             "html": "",  # Empty to prevent HTML extraction path
                             "content_type": "application/pdf" if filename.lower().endswith('.pdf') else (
                                 "text/markdown" if filename.lower().endswith(('.html', '.htm', '.md')) else "text/plain"
                             )
                         }]
                         
-                        logger.info(f"🔍 DEBUG: Created crawl_results with url={doc_url}, content_length={len(file_content)}")
+                        logger.info(
+                            f"🔍 DEBUG: Created crawl_results with url={doc_url}, content_length={len(file_content) if file_content else len(cached_document_text)}"
+                        )
                         
                         # Create progress callback for code extraction
                         async def code_progress_callback(data: dict):

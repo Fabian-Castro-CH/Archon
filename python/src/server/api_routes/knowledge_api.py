@@ -29,7 +29,7 @@ from ..services.knowledge import DatabaseMetricsService, KnowledgeItemService, K
 from ..services.search.rag_service import RAGService
 from ..services.storage import DocumentStorageService
 from ..utils import get_supabase_client
-from ..utils.document_processing import extract_text_from_document
+from ..utils.document_processing import extract_text_from_document, iter_pdf_text_batches
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -1011,11 +1011,21 @@ async def _perform_upload_with_progress(
             log=f"Extracting text from {filename}"
         )
 
+        extracted_text: str | None = None
+        text_batches = None
+
         try:
-            extracted_text = extract_text_from_document(file_content, filename, content_type)
-            safe_logfire_info(
-                f"Document text extracted | filename={filename} | extracted_length={len(extracted_text)} | content_type={content_type}"
-            )
+            is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
+            if is_pdf:
+                text_batches = iter_pdf_text_batches(file_content, pages_per_batch=20)
+                safe_logfire_info(
+                    f"PDF batch extraction initialized | filename={filename} | pages_per_batch=20"
+                )
+            else:
+                extracted_text = extract_text_from_document(file_content, filename, content_type)
+                safe_logfire_info(
+                    f"Document text extracted | filename={filename} | extracted_length={len(extracted_text)} | content_type={content_type}"
+                )
         except ValueError as ex:
             # ValueError indicates unsupported format or empty file - user error
             logger.warning(f"Document validation failed: {filename} - {str(ex)}")
@@ -1061,6 +1071,7 @@ async def _perform_upload_with_progress(
             extract_code_examples=extract_code_examples,
             progress_callback=document_progress_callback,
             cancellation_check=check_upload_cancellation,
+            text_batches=text_batches,
         )
 
         if success:
