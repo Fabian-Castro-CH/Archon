@@ -61,16 +61,16 @@ class DocumentStorageService(BaseStorageService):
                 await report_progress("Starting document processing...", 10)
 
                 # Use base class chunking
-                chunks = await self.smart_chunk_text_async(
+                text_batches = self.split_text_for_incremental_chunking(
                     file_content,
-                    chunk_size=5000,
-                    progress_callback=lambda msg, pct: report_progress(
-                        f"Chunking: {msg}", 10 + float(pct) * 0.2
-                    ),
+                    max_chars_per_batch=200_000,
+                    pdf_pages_per_batch=75,
                 )
 
-                if not chunks:
-                    raise ValueError(f"No content could be extracted from {filename}. The file may be empty, corrupted, or in an unsupported format.")
+                if not text_batches:
+                    raise ValueError(
+                        f"No content could be extracted from {filename}. The file may be empty, corrupted, or in an unsupported format."
+                    )
 
                 await report_progress("Preparing document chunks...", 30)
 
@@ -81,31 +81,85 @@ class DocumentStorageService(BaseStorageService):
                 contents = []
                 metadatas = []
                 total_word_count = 0
+                total_chunks = 0
+                delete_done = False
 
-                # Process chunks with metadata
-                for i, chunk in enumerate(chunks):
-                    # Use base class metadata extraction
-                    meta = self.extract_metadata(
-                        chunk,
-                        {
-                            "chunk_index": i,
-                            "url": doc_url,
-                            "source": source_id,
-                            "source_id": source_id,
-                            "knowledge_type": knowledge_type,
-                            "source_type": "file",  # FIX: Mark as file upload
-                            "filename": filename,
-                        },
+                async def flush_pending_chunks() -> None:
+                    nonlocal delete_done
+                    if not contents:
+                        return
+
+                    await add_documents_to_supabase(
+                        client=self.supabase_client,
+                        urls=urls,
+                        chunk_numbers=chunk_numbers,
+                        contents=contents,
+                        metadatas=metadatas,
+                        url_to_full_document=url_to_full_document,
+                        batch_size=15,
+                        progress_callback=progress_callback,
+                        enable_parallel_batches=True,
+                        provider=None,
+                        cancellation_check=cancellation_check,
+                        delete_existing_records=not delete_done,
+                        deletion_urls=[doc_url] if not delete_done else None,
                     )
 
-                    if tags:
-                        meta["tags"] = tags
+                    delete_done = True
+                    urls.clear()
+                    chunk_numbers.clear()
+                    contents.clear()
+                    metadatas.clear()
 
-                    urls.append(doc_url)
-                    chunk_numbers.append(i)
-                    contents.append(chunk)
-                    metadatas.append(meta)
-                    total_word_count += meta.get("word_count", 0)
+                chunk_index = 0
+                flush_threshold = 250
+
+                for batch_index, text_batch in enumerate(text_batches, 1):
+                    if cancellation_check:
+                        cancellation_check()
+
+                    await report_progress(
+                        f"Chunking document batch {batch_index}/{len(text_batches)}...",
+                        30,
+                    )
+
+                    batch_chunks = await self.smart_chunk_text_async(
+                        text_batch,
+                        chunk_size=5000,
+                    )
+
+                    for chunk in batch_chunks:
+                        meta = self.extract_metadata(
+                            chunk,
+                            {
+                                "chunk_index": chunk_index,
+                                "url": doc_url,
+                                "source": source_id,
+                                "source_id": source_id,
+                                "knowledge_type": knowledge_type,
+                                "source_type": "file",
+                                "filename": filename,
+                            },
+                        )
+
+                        if tags:
+                            meta["tags"] = tags
+
+                        urls.append(doc_url)
+                        chunk_numbers.append(chunk_index)
+                        contents.append(chunk)
+                        metadatas.append(meta)
+                        total_word_count += meta.get("word_count", 0)
+                        total_chunks += 1
+                        chunk_index += 1
+
+                        if len(contents) >= flush_threshold:
+                            await flush_pending_chunks()
+
+                if total_chunks == 0:
+                    raise ValueError(
+                        f"No content could be extracted from {filename}. The file may be empty, corrupted, or in an unsupported format."
+                    )
 
                 await report_progress("Updating source information...", 50)
 
@@ -132,25 +186,11 @@ class DocumentStorageService(BaseStorageService):
                 )
 
                 await report_progress("Storing document chunks...", 70)
-
-                # Store documents
-                await add_documents_to_supabase(
-                    client=self.supabase_client,
-                    urls=urls,
-                    chunk_numbers=chunk_numbers,
-                    contents=contents,
-                    metadatas=metadatas,
-                    url_to_full_document=url_to_full_document,
-                    batch_size=15,
-                    progress_callback=progress_callback,
-                    enable_parallel_batches=True,
-                    provider=None,  # Use configured provider
-                    cancellation_check=cancellation_check,
-                )
+                await flush_pending_chunks()
 
                 # Extract code examples if requested
                 code_examples_count = 0
-                if extract_code_examples and len(chunks) > 0:
+                if extract_code_examples and total_chunks > 0:
                     try:
                         await report_progress("Extracting code examples...", 85)
                         
@@ -205,7 +245,7 @@ class DocumentStorageService(BaseStorageService):
                 await report_progress("Document upload completed!", 100)
 
                 result = {
-                    "chunks_stored": len(chunks),
+                    "chunks_stored": total_chunks,
                     "code_examples_stored": code_examples_count,
                     "total_word_count": total_word_count,
                     "source_id": source_id,
@@ -213,12 +253,12 @@ class DocumentStorageService(BaseStorageService):
                 }
 
                 span.set_attribute("success", True)
-                span.set_attribute("chunks_stored", len(chunks))
+                span.set_attribute("chunks_stored", total_chunks)
                 span.set_attribute("code_examples_stored", code_examples_count)
                 span.set_attribute("total_word_count", total_word_count)
 
                 logger.info(
-                    f"Document upload completed successfully: filename={filename}, chunks_stored={len(chunks)}, code_examples_stored={code_examples_count}, total_word_count={total_word_count}"
+                    f"Document upload completed successfully: filename={filename}, chunks_stored={total_chunks}, code_examples_stored={code_examples_count}, total_word_count={total_word_count}"
                 )
 
                 return True, result

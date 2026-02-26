@@ -163,6 +163,92 @@ class BaseStorageService(ABC):
                 logger.error(f"Error chunking text: {e}")
                 raise
 
+    def split_text_for_incremental_chunking(
+        self,
+        text: str,
+        max_chars_per_batch: int = 200_000,
+        pdf_pages_per_batch: int = 75,
+    ) -> list[str]:
+        """
+        Split very large text into processing batches to avoid memory spikes.
+
+        Strategy:
+        - If PDF page markers are present ("--- Page N ---"), batch by pages.
+        - Otherwise, batch by character windows with paragraph-aware boundaries.
+
+        Args:
+            text: Full text to split
+            max_chars_per_batch: Maximum characters per processing batch
+            pdf_pages_per_batch: Maximum PDF pages per processing batch when markers are present
+
+        Returns:
+            List of text batches suitable for incremental chunking
+        """
+        if not text or not isinstance(text, str):
+            return []
+
+        max_chars_per_batch = max(10_000, int(max_chars_per_batch))
+        pdf_pages_per_batch = max(1, int(pdf_pages_per_batch))
+
+        page_marker_pattern = re.compile(r"(?m)^--- Page \d+ ---\n?")
+        page_markers = list(page_marker_pattern.finditer(text))
+
+        if page_markers:
+            page_sections: list[str] = []
+            for i, marker in enumerate(page_markers):
+                start = marker.start()
+                end = page_markers[i + 1].start() if i + 1 < len(page_markers) else len(text)
+                section = text[start:end].strip()
+                if section:
+                    page_sections.append(section)
+
+            batched_texts: list[str] = []
+            current_batch: list[str] = []
+            current_chars = 0
+
+            for page_index, page_section in enumerate(page_sections):
+                page_chars = len(page_section)
+                reached_page_limit = len(current_batch) >= pdf_pages_per_batch
+                reached_char_limit = current_batch and (current_chars + page_chars) > max_chars_per_batch
+
+                if reached_page_limit or reached_char_limit:
+                    batched_texts.append("\n\n".join(current_batch))
+                    current_batch = []
+                    current_chars = 0
+
+                current_batch.append(page_section)
+                current_chars += page_chars
+
+                is_last_page = page_index == len(page_sections) - 1
+                if is_last_page and current_batch:
+                    batched_texts.append("\n\n".join(current_batch))
+
+            return batched_texts
+
+        batched_texts = []
+        start = 0
+        text_length = len(text)
+
+        while start < text_length:
+            end = min(start + max_chars_per_batch, text_length)
+
+            if end < text_length:
+                window = text[start:end]
+                paragraph_break = window.rfind("\n\n")
+                if paragraph_break > max_chars_per_batch * 0.6:
+                    end = start + paragraph_break
+
+            section = text[start:end].strip()
+            if section:
+                batched_texts.append(section)
+
+            if end >= text_length:
+                break
+
+            start = end
+
+        return batched_texts
+
     def extract_metadata(
         self, chunk: str, base_metadata: dict[str, Any] | None = None
     ) -> dict[str, Any]:

@@ -299,44 +299,53 @@ class DocumentStorageOperations:
 
                 doc_url = doc["url"]
                 markdown_content = doc["markdown"]
-                chunks = await storage_service.smart_chunk_text_async(markdown_content, chunk_size=5000)
+                text_batches = storage_service.split_text_for_incremental_chunking(
+                    markdown_content,
+                    max_chars_per_batch=200_000,
+                    pdf_pages_per_batch=75,
+                )
 
-                for chunk_index, chunk in enumerate(chunks):
-                    if cancellation_check and chunk_index % 10 == 0:
-                        try:
-                            cancellation_check()
-                        except asyncio.CancelledError:
-                            if progress_callback:
-                                await progress_callback(
-                                    "cancelled",
-                                    99,
-                                    f"Chunking cancelled at chunk {chunk_index + 1}/{len(chunks)} of document {doc_index + 1}",
-                                )
-                            raise
+                doc_chunk_index = 0
+                for text_batch in text_batches:
+                    chunks = await storage_service.smart_chunk_text_async(text_batch, chunk_size=5000)
 
-                    word_count = len(chunk.split())
-                    pending_urls.append(doc_url)
-                    pending_chunk_numbers.append(chunk_index)
-                    pending_contents.append(chunk)
-                    pending_metadatas.append(
-                        {
-                            "url": doc_url,
-                            "title": doc.get("title", ""),
-                            "description": doc.get("description", ""),
-                            "source_id": original_source_id,
-                            "knowledge_type": request.get("knowledge_type", "documentation"),
-                            "page_id": url_to_page_id.get(doc_url),
-                            "crawl_type": crawl_type,
-                            "word_count": word_count,
-                            "char_count": len(chunk),
-                            "chunk_index": chunk_index,
-                            "tags": request.get("tags", []),
-                        }
-                    )
-                    chunk_count += 1
+                    for chunk in chunks:
+                        if cancellation_check and doc_chunk_index % 10 == 0:
+                            try:
+                                cancellation_check()
+                            except asyncio.CancelledError:
+                                if progress_callback:
+                                    await progress_callback(
+                                        "cancelled",
+                                        99,
+                                        f"Chunking cancelled at chunk {doc_chunk_index + 1} of document {doc_index + 1}",
+                                    )
+                                raise
 
-                    if len(pending_contents) >= flush_chunk_size:
-                        await flush_pending_chunks()
+                        word_count = len(chunk.split())
+                        pending_urls.append(doc_url)
+                        pending_chunk_numbers.append(doc_chunk_index)
+                        pending_contents.append(chunk)
+                        pending_metadatas.append(
+                            {
+                                "url": doc_url,
+                                "title": doc.get("title", ""),
+                                "description": doc.get("description", ""),
+                                "source_id": original_source_id,
+                                "knowledge_type": request.get("knowledge_type", "documentation"),
+                                "page_id": url_to_page_id.get(doc_url),
+                                "crawl_type": crawl_type,
+                                "word_count": word_count,
+                                "char_count": len(chunk),
+                                "chunk_index": doc_chunk_index,
+                                "tags": request.get("tags", []),
+                            }
+                        )
+                        chunk_count += 1
+                        doc_chunk_index += 1
+
+                        if len(pending_contents) >= flush_chunk_size:
+                            await flush_pending_chunks()
 
                 if doc_index > 0 and doc_index % 5 == 0:
                     await asyncio.sleep(0)
