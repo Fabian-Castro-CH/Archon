@@ -59,6 +59,15 @@ class DocumentStorageService(BaseStorageService):
                     if progress_callback:
                         await progress_callback(message, percentage, batch_info)
 
+                async def storage_progress_callback(
+                    status: str,
+                    progress: int,
+                    message: str,
+                    **kwargs,
+                ):
+                    # Normalize storage-layer callback shape to upload callback shape.
+                    await report_progress(message, int(progress), kwargs or None)
+
                 await report_progress("Starting document processing...", 10)
 
                 if text_batches is None:
@@ -95,6 +104,23 @@ class DocumentStorageService(BaseStorageService):
                 # Create URL to document text mapping (bounded to control memory)
                 url_to_full_document = {doc_url: cached_document_text}
 
+                # Ensure source record exists before first chunk insert to satisfy FK constraints.
+                from ..source_management_service import extract_source_summary, update_source_info
+
+                provisional_title_seed = title_seed or filename
+                await update_source_info(
+                    self.supabase_client,
+                    source_id,
+                    f"Processing uploaded document: {filename}",
+                    0,
+                    content=provisional_title_seed,
+                    knowledge_type=knowledge_type,
+                    tags=tags,
+                    source_url=f"file://{filename}",
+                    source_display_name=filename,
+                    source_type="file",
+                )
+
                 async def flush_pending_chunks() -> None:
                     nonlocal delete_done
                     if not contents:
@@ -108,7 +134,7 @@ class DocumentStorageService(BaseStorageService):
                         metadatas=metadatas,
                         url_to_full_document=url_to_full_document,
                         batch_size=15,
-                        progress_callback=progress_callback,
+                        progress_callback=storage_progress_callback,
                         enable_parallel_batches=True,
                         provider=None,
                         cancellation_check=cancellation_check,
@@ -192,8 +218,6 @@ class DocumentStorageService(BaseStorageService):
                 await report_progress("Updating source information...", 50)
 
                 # Update source information
-                from ..source_management_service import extract_source_summary, update_source_info
-
                 source_summary = await extract_source_summary(source_id, summary_seed)
 
                 logger.info(f"Updating source info for {source_id} with knowledge_type={knowledge_type}")
@@ -251,7 +275,7 @@ class DocumentStorageService(BaseStorageService):
                                 raw_progress = data.get("progress", data.get("percentage", 0))
                                 mapped_progress = 85 + (raw_progress / 100.0) * 10  # 85% to 95%
                                 message = data.get("log", "Extracting code examples...")
-                                await progress_callback(message, int(mapped_progress))
+                                await report_progress(message, int(mapped_progress))
                         
                         logger.info(f"🔍 DEBUG: About to call extract_and_store_code_examples...")
                         code_examples_count = await code_service.extract_and_store_code_examples(
